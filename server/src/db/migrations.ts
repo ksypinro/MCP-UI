@@ -99,5 +99,14 @@ export const MIGRATIONS: Migration[] = [
 
       CREATE INDEX audit_events_device_idx ON audit_events (device_id, occurred_at);
     `
+  },
+  {
+    name: '002_idempotency_fingerprint',
+    sql: `
+      -- Without this, a key looked up by itself makes a replay carrying
+      -- different arguments return the first request's device and call it
+      -- created. The fingerprint lets a mismatched replay be refused.
+      ALTER TABLE idempotency_keys ADD COLUMN request_fingerprint text;
+    `
   }
 ];

@@ -68,13 +68,23 @@ export function authenticate(db: Db, options: { required: boolean }): RequestHan
   };
 }
 
-/** Requests per window, keyed by address and route. Spec section 7.2. */
-export function rateLimit(limit: number, windowMs: number): RequestHandler {
+/**
+ * Requests per window. Spec section 7.2.
+ *
+ * The bucket key is a parameter because the right one differs by route:
+ * credential-guessing surfaces are limited by address, but an authenticated
+ * routine operation must not be, or everyone behind one NAT shares a quota.
+ */
+export function rateLimit(
+  limit: number,
+  windowMs: number,
+  keyOf: (req: Request) => string = (req) => `${req.ip ?? 'unknown'}:${req.path}`
+): RequestHandler {
   const hits = new Map<string, { count: number; resetAt: number }>();
 
   return (req, res, next) => {
     const now = Date.now();
-    const key = `${req.ip ?? 'unknown'}:${req.path}`;
+    const key = keyOf(req);
     const entry = hits.get(key);
 
     if (!entry || entry.resetAt <= now) {
@@ -116,9 +126,17 @@ export function errorHandler() {
       return;
     }
 
-    // express.json() rejects a malformed body with a SyntaxError carrying a
-    // status. That is the client's mistake, not ours.
-    if (error instanceof SyntaxError && 'status' in error && (error as { status?: number }).status === 400) {
+    // body-parser rejections are the client's mistake, not ours. Key on its
+    // `type`, not on the error class: only a parse failure is a SyntaxError,
+    // so matching on the class alone sends an oversized body to the 500 branch
+    // and tells the caller the server broke.
+    const parserType = (error as { type?: string })?.type;
+    if (parserType === 'entity.too.large') {
+      const tooLarge = new AppError('VALIDATION_FAILED', 'Request body is too large.');
+      res.status(413).json(tooLarge.toBody(requestId));
+      return;
+    }
+    if (parserType === 'entity.parse.failed' || parserType === 'encoding.unsupported') {
       const malformed = new AppError('MALFORMED_REQUEST');
       res.status(malformed.status).json(malformed.toBody(requestId));
       return;

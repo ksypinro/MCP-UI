@@ -7,7 +7,7 @@
  * like a request.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import type { Db, Queryable } from '../db/index.ts';
 import { AppError } from '../errors.ts';
 import { displayDeviceName, normalizeDeviceName } from '../normalize.ts';
@@ -87,9 +87,16 @@ export async function addDevice(db: Db, identity: Identity, input: AddDeviceInpu
 
   return db.transaction(async (tx) => {
     if (input.idempotencyKey) {
-      const replay = await findByIdempotencyKey(tx, identity, input.idempotencyKey);
+      const replay = await findByIdempotencyKey(tx, identity, input.idempotencyKey, fingerprint(normalizedName));
       if (replay) return replay;
     }
+
+    // Serialise creates for this account. Unlike the duplicate-name and
+    // version rules, the device cap has no constraint backing it, so a bare
+    // count-then-insert lets two concurrent creates both pass the check at
+    // 99 and leave the account holding 101. Locking the owner row makes the
+    // count and the insert one indivisible step.
+    await tx.query('SELECT 1 FROM accounts WHERE id = $1 FOR UPDATE', [identity.accountId]);
 
     const { rows: counted } = await tx.query<{ n: number }>(
       'SELECT count(*)::int AS n FROM devices WHERE owner_id = $1',
@@ -116,7 +123,7 @@ export async function addDevice(db: Db, identity: Identity, input: AddDeviceInpu
       // Two identical creates racing: whoever lost still must not see a
       // second device, and a replay of the winner's key returns the winner.
       if (input.idempotencyKey) {
-        const replay = await findByIdempotencyKey(tx, identity, input.idempotencyKey);
+        const replay = await findByIdempotencyKey(tx, identity, input.idempotencyKey, fingerprint(normalizedName));
         if (replay) return replay;
       }
       throw new AppError('DEVICE_NAME_CONFLICT');
@@ -124,10 +131,10 @@ export async function addDevice(db: Db, identity: Identity, input: AddDeviceInpu
 
     if (input.idempotencyKey) {
       await tx.query(
-        `INSERT INTO idempotency_keys (account_id, endpoint, key, device_id)
-         VALUES ($1, 'POST /v1/devices', $2, $3)
+        `INSERT INTO idempotency_keys (account_id, endpoint, key, device_id, request_fingerprint)
+         VALUES ($1, 'POST /v1/devices', $2, $3, $4)
          ON CONFLICT DO NOTHING`,
-        [identity.accountId, input.idempotencyKey, row.id]
+        [identity.accountId, input.idempotencyKey, row.id, fingerprint(normalizedName)]
       );
     }
 
@@ -143,20 +150,40 @@ export async function addDevice(db: Db, identity: Identity, input: AddDeviceInpu
   });
 }
 
+/**
+ * Identifies what a replay asked for, so a key reused with different arguments
+ * can be refused instead of silently returning the first request's device.
+ */
+function fingerprint(normalizedName: string): string {
+  return createHash('sha256').update(normalizedName).digest('hex');
+}
+
 async function findByIdempotencyKey(
   tx: Queryable,
   identity: Identity,
-  key: string
+  key: string,
+  expected: string
 ): Promise<Device | null> {
-  const { rows } = await tx.query<DeviceRow>(
-    `SELECT ${COLUMNS.split(', ').map((c) => `d.${c}`).join(', ')}
+  const { rows } = await tx.query<DeviceRow & { request_fingerprint: string | null }>(
+    `SELECT ${COLUMNS.split(', ').map((c) => `d.${c}`).join(', ')}, k.request_fingerprint
        FROM idempotency_keys k
        JOIN devices d ON d.id = k.device_id
       WHERE k.account_id = $1 AND k.endpoint = 'POST /v1/devices' AND k.key = $2`,
     [identity.accountId, key]
   );
   const row = rows[0];
-  return row ? toDevice(row) : null;
+  if (!row) return null;
+
+  // A key is a promise that this is the same request, not a licence to return
+  // whatever it created the first time.
+  if (row.request_fingerprint !== null && row.request_fingerprint !== expected) {
+    throw new AppError(
+      'VALIDATION_FAILED',
+      'This Idempotency-Key was already used for a different device.',
+      'name'
+    );
+  }
+  return toDevice(row);
 }
 
 /* ---------------------------------------------------------------- control */

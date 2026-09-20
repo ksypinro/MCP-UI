@@ -140,10 +140,14 @@ export async function refreshSession(db: Db, refreshToken: unknown): Promise<Ses
        VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))`,
       [nextId, session.account_id, session.family_id, fingerprint(nextRefresh), REFRESH_TOKEN_TTL_SECONDS]
     );
-    await tx.query(
-      'UPDATE sessions SET replaced_by = $1, revoked_at = now() WHERE id = $2',
-      [nextId, session.id]
-    );
+    // Marked replaced, but deliberately NOT revoked. Revoking here would kill
+    // the outgoing access token the instant the refresh lands, so a client
+    // that refreshes proactively — the ordinary pattern with 15-minute access
+    // tokens — would fail every request it already had in flight. The old
+    // access token expires on its own in minutes; the old refresh token is
+    // already dead because replaced_by is set, and logout or detected reuse
+    // still revokes the entire family.
+    await tx.query('UPDATE sessions SET replaced_by = $1 WHERE id = $2', [nextId, session.id]);
 
     const accessToken = await issueAccessToken(tx, nextId, session.account_id);
     return { ok: true, tokens: { accessToken, refreshToken: nextRefresh, expiresIn: ACCESS_TOKEN_TTL_SECONDS } };
@@ -180,4 +184,20 @@ async function revokeFamily(tx: Queryable, familyId: string): Promise<void> {
     'UPDATE sessions SET revoked_at = now() WHERE family_id = $1 AND revoked_at IS NULL',
     [familyId]
   );
+}
+
+/**
+ * Deletes what has already expired. Both tables are on the hot path — every
+ * protected request joins them — so without a sweep the index behind that join
+ * grows with uptime rather than with load, and latency degrades quietly.
+ *
+ * Returns the row counts so a caller can log or test them.
+ */
+export async function pruneExpired(db: Db): Promise<{ accessTokens: number; sessions: number }> {
+  const tokens = await db.query('DELETE FROM access_tokens WHERE expires_at <= now()');
+  // Only sessions that can no longer be refreshed by anyone. A revoked session
+  // is kept until its window closes so that reuse of its refresh token is
+  // still recognised as reuse rather than as an unknown token.
+  const sessions = await db.query('DELETE FROM sessions WHERE expires_at <= now()');
+  return { accessTokens: tokens.affectedRows, sessions: sessions.affectedRows };
 }

@@ -64,6 +64,16 @@ Refresh tokens rotate. Each refresh appends a row to the same family and marks
 the old one replaced. Presenting an already-replaced token means it leaked, so
 the whole family is revoked — including the session the thief did not steal.
 
+Rotation marks the outgoing session replaced but does **not** revoke it. Its
+refresh token is already dead, and its access token expires on its own within
+minutes; revoking immediately would fail every request a client had in flight
+when it refreshed proactively. Logout and detected reuse still revoke the
+whole family at once.
+
+Expired sessions and access tokens are swept hourly. Both are joined on every
+protected request, so leaving them to accumulate degrades latency with uptime
+rather than with load.
+
 ## On PGlite
 
 The store is [PGlite](https://pglite.dev): real PostgreSQL compiled to
@@ -87,7 +97,12 @@ SQL specifically to keep that a one-file change.
 - The rate limiter is per-process and in-memory; several instances behind a
   load balancer would each allow the full quota. `TRUST_PROXY` is off unless
   set, because trusting `X-Forwarded-For` unconditionally lets a client forge
-  `req.ip` and walk around the limit.
+  `req.ip` and walk around the limit. Sign-up and log-in are bucketed by
+  address; refresh is bucketed by the token presented, so an office NAT cannot
+  log its eleventh user out.
+- Device names fold with NFKC plus lowercase, which is not full Unicode case
+  folding — "Straße" and "STRASSE" remain distinct devices. Usernames are
+  unaffected because validation restricts them to ASCII first.
 - `USERNAME_TAKEN` is not in the spec's section 6.3 table, which covers only
   the device API. Sign-up needs a distinct code so the client can highlight the
   username field; the spec should gain it.

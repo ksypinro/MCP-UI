@@ -10,6 +10,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createDb } from '../src/db/index.ts';
+import { MIGRATIONS } from '../src/db/migrations.ts';
 import { createAccount, verifyCredentials } from '../src/domain/accounts.ts';
 import { addDevice, controlDevice, listDevices } from '../src/domain/devices.ts';
 import type { Identity } from '../src/domain/types.ts';
@@ -41,7 +42,7 @@ test('accounts, devices and state survive a full restart', async () => {
 
     // And the schema is not reapplied on top of itself.
     const migrations = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM schema_migrations');
-    assert.equal(migrations.rows[0]?.n, 1);
+    assert.equal(migrations.rows[0]?.n, MIGRATIONS.length, 'migrations are applied once, not reapplied');
 
     await db.close();
   } finally {

@@ -8,12 +8,21 @@
  * genuinely unpleasant to trace back to its cause.
  */
 
-/** Trim, NFKC, case-fold. Used for the unique account lookup. */
+/** Trim, NFKC, lowercase. Used for the unique account lookup. */
 export function normalizeUsername(raw: string): string {
   return raw.trim().normalize('NFKC').toLowerCase();
 }
 
-/** Trim, collapse internal whitespace runs, NFKC, case-fold. */
+/**
+ * Trim, collapse internal whitespace runs, NFKC, lowercase.
+ *
+ * Lowercasing is not full Unicode case folding, and JavaScript has no built-in
+ * that is. The difference is real but narrow: "Straße" and "STRASSE" fold
+ * apart, so a German user can hold both as separate devices. Usernames avoid
+ * this because validation restricts them to ASCII first; device names are not
+ * restricted, so this is a known limitation rather than an oversight. If it
+ * ever matters, the fix is a case-folding table here, and nowhere else.
+ */
 export function normalizeDeviceName(raw: string): string {
   return collapseWhitespace(raw).normalize('NFKC').toLowerCase();
 }

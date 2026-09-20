@@ -18,7 +18,20 @@ before(async () => {
   server = createApp(db).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+
+  // Fixtures belong here, not in the first test. Assigning them from a test
+  // makes every later case depend on execution order, and a broken fixture
+  // then surfaces several cases downstream as an unexplained 401 rather than
+  // where it happened.
+  sam = await signUp('sam');
+  other = await signUp('jordan');
 });
+
+async function signUp(username: string): Promise<Session> {
+  const res = await call<Session>('POST', '/v1/auth/signup', { body: { username, password: PASSWORD } });
+  assert.equal(res.status, 201, `fixture ${username} failed: ${JSON.stringify(res.body)}`);
+  return res.body;
+}
 
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
@@ -58,18 +71,22 @@ interface Session { accessToken: string; refreshToken: string; account: { id: st
 let sam: Session;
 let other: Session;
 
-test('sign-up returns 201 with an account and a session', async () => {
-  const res = await call<Session>('POST', '/v1/auth/signup', { body: { username: 'sam', password: PASSWORD } });
+test('sign-up returns an account and a session, and echoes no secrets', async () => {
+  const res = await call<Session>('POST', '/v1/auth/signup', { body: { username: 'dana', password: PASSWORD } });
   assert.equal(res.status, 201);
-  assert.equal(res.body.account.username, 'sam');
+  assert.equal(res.body.account.username, 'dana');
   assert.ok(res.body.accessToken && res.body.refreshToken);
   assert.ok(!JSON.stringify(res.body).includes(PASSWORD), 'the password is never echoed');
   assert.ok(!('passwordHash' in (res.body.account as object)), 'the hash is never exposed');
-  sam = res.body;
+});
 
-  const second = await call<Session>('POST', '/v1/auth/signup', { body: { username: 'jordan', password: PASSWORD } });
-  assert.equal(second.status, 201, `second fixture account failed: ${JSON.stringify(second.body)}`);
-  other = second.body;
+test('a body larger than the limit is a client error, not a server error', async () => {
+  const res = await call('POST', '/v1/devices', {
+    token: sam.accessToken,
+    raw: JSON.stringify({ name: 'x'.repeat(100_000) })
+  });
+  assert.equal(res.status, 413, 'an oversized body must not be reported as an internal error');
+  assert.equal(res.body.error?.code, 'VALIDATION_FAILED');
 });
 
 test('a duplicate username is a 409 naming the field', async () => {

@@ -158,6 +158,23 @@ test('an idempotency key makes a replayed create return the original device', as
   await db.close();
 });
 
+test('an idempotency key reused for a different device is refused', async () => {
+  const db = await freshDb();
+  const me = await makeIdentity(db);
+
+  const first = await addDevice(db, me, { name: 'Bedroom Lamp', idempotencyKey: 'k1' });
+
+  // Returning `first` here would tell the caller it created a fan. It did not.
+  await rejectsWithCode(
+    () => addDevice(db, me, { name: 'Totally Different Fan', idempotencyKey: 'k1' }),
+    'VALIDATION_FAILED'
+  );
+
+  const devices = await listDevices(db, me);
+  assert.deepEqual(devices.map((d) => d.id), [first.id]);
+  await db.close();
+});
+
 test('the device cap is enforced', async () => {
   const db = await freshDb();
   const me = await makeIdentity(db);

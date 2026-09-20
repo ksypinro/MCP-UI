@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createAccount, verifyCredentials } from '../src/domain/accounts.ts';
-import { refreshSession, revokeSession, startSession, verifyAccessToken } from '../src/domain/sessions.ts';
+import {
+  pruneExpired, refreshSession, revokeSession, startSession, verifyAccessToken
+} from '../src/domain/sessions.ts';
 import { freshDb, rejectsWithCode } from './helpers.ts';
 
 const PASSWORD = 'correct horse battery staple';
@@ -121,6 +123,61 @@ test('replaying a rotated refresh token revokes the whole family', async () => {
 
   assert.equal(await verifyAccessToken(db, second.accessToken), null, 'the live session is revoked too');
   await rejectsWithCode(() => refreshSession(db, second.refreshToken), 'UNAUTHENTICATED');
+  await db.close();
+});
+
+test('rotation leaves the outgoing access token usable until it expires', async () => {
+  const db = await freshDb();
+  const account = await createAccount(db, 'sam', PASSWORD);
+  const first = await startSession(db, account.id);
+
+  await refreshSession(db, first.refreshToken);
+
+  // A client refreshing proactively still has requests in flight carrying the
+  // previous access token. Killing it at the moment of rotation turns those
+  // into spurious session-expired errors.
+  assert.ok(
+    await verifyAccessToken(db, first.accessToken),
+    'the previous access token must live out its own TTL'
+  );
+  await db.close();
+});
+
+test('logout still kills every access token across a rotated family', async () => {
+  const db = await freshDb();
+  const account = await createAccount(db, 'sam', PASSWORD);
+  const first = await startSession(db, account.id);
+  const second = await refreshSession(db, first.refreshToken);
+
+  const live = await verifyAccessToken(db, second.accessToken);
+  await revokeSession(db, live!.sessionId);
+
+  assert.equal(await verifyAccessToken(db, second.accessToken), null);
+  assert.equal(await verifyAccessToken(db, first.accessToken), null, 'the ancestor goes too');
+  await db.close();
+});
+
+test('the sweep removes expired rows and keeps live ones', async () => {
+  const db = await freshDb();
+  const account = await createAccount(db, 'sam', PASSWORD);
+  const live = await startSession(db, account.id);
+
+  const stale = await startSession(db, account.id);
+  const staleSession = await verifyAccessToken(db, stale.accessToken);
+  await db.query(
+    `UPDATE access_tokens SET expires_at = now() - interval '1 hour' WHERE session_id = $1`,
+    [staleSession!.sessionId]
+  );
+  await db.query(
+    `UPDATE sessions SET expires_at = now() - interval '1 hour' WHERE id = $1`,
+    [staleSession!.sessionId]
+  );
+
+  const pruned = await pruneExpired(db);
+  assert.equal(pruned.accessTokens, 1);
+  assert.equal(pruned.sessions, 1);
+
+  assert.ok(await verifyAccessToken(db, live.accessToken), 'the live session is untouched');
   await db.close();
 });
 
