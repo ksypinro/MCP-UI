@@ -1,0 +1,333 @@
+<!--
+  Phase 0 spike: device list with switches, plus a diagnostics panel.
+
+  The panel is the point. It reports what the host actually tells us and what
+  the iframe can actually see, so the questions in FINDINGS.md are answered by
+  observation rather than assumption. In particular "content vs viewport"
+  answers how much of a list survives an inline card on a phone.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Devices</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: var(--font-text-md-size, 15px)/1.4 var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    color: var(--color-text-primary, #141413);
+    background: var(--color-background-primary, #fff);
+    padding-top: var(--safe-top, 0px);
+    padding-right: var(--safe-right, 0px);
+    padding-bottom: var(--safe-bottom, 0px);
+    padding-left: var(--safe-left, 0px);
+  }
+  .wrap { padding: 12px; }
+  h1 { font-size: var(--font-heading-md-size, 16px); margin: 0 0 2px; }
+  .sub { color: var(--color-text-secondary, #3d3d3a); font-size: 13px; margin: 0 0 12px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: center; gap: 10px; padding: 10px 0;
+    border-bottom: 1px solid var(--color-border-tertiary, rgba(31,30,29,.15));
+  }
+  li:last-child { border-bottom: 0; }
+  .icon { width: 28px; height: 28px; flex: none; display: grid; place-items: center;
+          border-radius: var(--border-radius-full, 999px);
+          background: var(--color-background-secondary, #f5f4ed); font-size: 14px; }
+  .meta { flex: 1; min-width: 0; }
+  .name { font-weight: var(--font-weight-medium, 500); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .state { font-size: 12px; color: var(--color-text-tertiary, #73726c); }
+  /* Text label always accompanies the switch: colour alone must not carry state. */
+  .sw { position: relative; width: 50px; height: 30px; flex: none; border: 0; padding: 0; cursor: pointer;
+        border-radius: 999px; background: var(--color-background-disabled, #d8d6cc); transition: background .15s; }
+  .sw[aria-checked="true"] { background: var(--color-border-success, #437426); }
+  .sw[disabled] { opacity: .5; cursor: progress; }
+  .sw::after { content: ""; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px;
+               border-radius: 999px; background: #fff; transition: transform .15s;
+               box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  .sw[aria-checked="true"]::after { transform: translateX(20px); }
+  .bar { display: flex; gap: 8px; margin: 12px 0 0; }
+  button.act { flex: 1; padding: 9px; font-size: 13px; font-weight: 600; cursor: pointer;
+    border-radius: var(--border-radius-md, 8px);
+    border: 1px solid var(--color-border-primary, rgba(31,30,29,.4));
+    background: var(--color-background-secondary, #f5f4ed); color: var(--color-text-primary, #141413); }
+  .diag { margin-top: 14px; padding: 10px; border-radius: var(--border-radius-md, 8px);
+          background: var(--color-background-secondary, #f5f4ed);
+          font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; line-height: 1.5; }
+  .diag b { display: block; font-family: inherit; margin-bottom: 4px; font-size: 11px; text-transform: uppercase;
+            letter-spacing: .04em; color: var(--color-text-tertiary, #73726c); }
+  .diag div { display: flex; justify-content: space-between; gap: 10px; }
+  .diag span:last-child { text-align: right; word-break: break-word; }
+  .warn { color: var(--color-text-danger, #7f2c28); font-weight: 700; }
+  .ok { color: var(--color-text-success, #265b19); font-weight: 700; }
+  #log { max-height: 140px; overflow: auto; white-space: pre-wrap; margin-top: 6px; }
+</style>
+
+<div class="wrap">
+  <h1>Devices</h1>
+  <p class="sub" id="status">Waiting for host…</p>
+  <ul id="list"></ul>
+
+  <div class="bar">
+    <button class="act" id="refresh">Refresh</button>
+    <button class="act" id="expand">Request fullscreen</button>
+  </div>
+
+  <div class="diag">
+    <b>Host diagnostics</b>
+    <div><span>host</span><span id="d-host">—</span></div>
+    <div><span>display mode</span><span id="d-mode">—</span></div>
+    <div><span>modes offered</span><span id="d-modes">—</span></div>
+    <div><span>theme</span><span id="d-theme">—</span></div>
+    <div><span>safe area t/r/b/l</span><span id="d-safe">—</span></div>
+    <div><span>viewport (iframe)</span><span id="d-view">—</span></div>
+    <div><span>content height</span><span id="d-content">—</span></div>
+    <div><span>fits inline?</span><span id="d-fits">—</span></div>
+    <b style="margin-top:10px">Bridge log</b>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  /* ------------------------------------------------ minimal MCP Apps bridge */
+  // Hand-rolled rather than using the ext-apps App class: the spec says the
+  // class is a convenience wrapper, and hand-rolling keeps the resource free of
+  // any external script, so _meta.ui.csp can stay empty.
+
+  let nextId = 1;
+  const pending = new Map();
+  const notificationHandlers = new Map();
+
+  function log(line) {
+    const el = document.getElementById('log');
+    el.textContent = `${new Date().toISOString().slice(11, 19)}  ${line}\n` + el.textContent;
+  }
+
+  function post(message) {
+    window.parent.postMessage(message, '*');
+  }
+
+  function request(method, params) {
+    const id = nextId++;
+    post({ jsonrpc: '2.0', id, method, params });
+    log(`→ ${method}`);
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      setTimeout(() => {
+        if (pending.has(id)) {
+          pending.delete(id);
+          reject(new Error(`${method} timed out after 30s`));
+        }
+      }, 30000);
+    });
+  }
+
+  function notify(method, params) {
+    post({ jsonrpc: '2.0', method, params });
+  }
+
+  function on(method, handler) {
+    notificationHandlers.set(method, handler);
+  }
+
+  // Handlers are registered before ui/initialize is sent, so a host that
+  // pushes tool-input or tool-result immediately does not race us.
+  window.addEventListener('message', (event) => {
+    // Only the host may drive this view. Origin is unpredictable inside a
+    // sandbox, so identify the sender by window reference instead.
+    if (event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== '2.0') return;
+
+    if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+      const waiter = pending.get(msg.id);
+      if (!waiter) return;
+      pending.delete(msg.id);
+      if (msg.error) {
+        log(`← error ${JSON.stringify(msg.error).slice(0, 120)}`);
+        waiter.reject(Object.assign(new Error(msg.error.message || 'tool error'), { rpc: msg.error }));
+      } else {
+        waiter.resolve(msg.result);
+      }
+      return;
+    }
+
+    if (msg.method) {
+      log(`← ${msg.method}`);
+      const handler = notificationHandlers.get(msg.method);
+      if (handler) handler(msg.params);
+    }
+  });
+
+  /* ----------------------------------------------------------------- state */
+
+  let devices = [];
+  let hostContext = {};
+
+  const $ = (id) => document.getElementById(id);
+
+  function setStatus(text, cls) {
+    const el = $('status');
+    el.textContent = text;
+    el.className = 'sub' + (cls ? ' ' + cls : '');
+  }
+
+  function applyHostContext(ctx) {
+    hostContext = ctx || {};
+    const safe = hostContext.safeAreaInsets || {};
+    // Safe areas arrive from the host, not from CSS env(): inside a chat
+    // WebView the page is not the thing the notch overlaps.
+    for (const [k, v] of Object.entries({ top: 'safe-top', right: 'safe-right', bottom: 'safe-bottom', left: 'safe-left' })) {
+      document.documentElement.style.setProperty(`--${v}`, `${safe[k] ?? 0}px`);
+    }
+    $('d-mode').textContent = hostContext.displayMode ?? '—';
+    $('d-theme').textContent = hostContext.theme ?? '—';
+    $('d-safe').textContent = `${safe.top ?? 0}/${safe.right ?? 0}/${safe.bottom ?? 0}/${safe.left ?? 0}`;
+    measure();
+  }
+
+  let lastReported = '';
+  function measure() {
+    const viewport = window.innerHeight;
+    const content = document.documentElement.scrollHeight;
+    $('d-view').textContent = `${window.innerWidth} × ${viewport}`;
+    $('d-content').textContent = `${content}px`;
+    const fits = content <= viewport + 1;
+    const el = $('d-fits');
+    el.textContent = fits ? 'yes' : `no — ${content - viewport}px cut off`;
+    el.className = fits ? 'ok' : 'warn';
+    // Only when it actually changed: the host may resize us in response, which
+    // fires resize, which lands back here. Echoing an unchanged value turns
+    // that into an unbounded loop.
+    const reported = `${window.innerWidth}x${content}`;
+    if (reported !== lastReported) {
+      lastReported = reported;
+      notify('ui/notifications/size-changed', { width: window.innerWidth, height: content });
+    }
+  }
+
+  function render() {
+    const list = $('list');
+    list.textContent = '';
+    for (const device of devices) {
+      const li = document.createElement('li');
+
+      const icon = document.createElement('div');
+      icon.className = 'icon';
+      icon.textContent = '◍';
+
+      const meta = document.createElement('div');
+      meta.className = 'meta';
+      const name = document.createElement('div');
+      name.className = 'name';
+      // textContent, not innerHTML: device names are user-supplied strings.
+      name.textContent = device.name;
+      const state = document.createElement('div');
+      state.className = 'state';
+      state.textContent = device.state === 'on' ? 'On' : 'Off';
+      meta.append(name, state);
+
+      const sw = document.createElement('button');
+      sw.className = 'sw';
+      sw.type = 'button';
+      sw.setAttribute('role', 'switch');
+      sw.setAttribute('aria-checked', String(device.state === 'on'));
+      sw.setAttribute('aria-label', device.name);
+      sw.addEventListener('click', () => control(device, sw, state));
+
+      li.append(icon, meta, sw);
+      list.append(li);
+    }
+    measure();
+  }
+
+  /* ------------------------------------------------------------ operations */
+
+  async function control(device, sw, stateEl) {
+    const desired = device.state === 'on' ? 'off' : 'on';
+    sw.disabled = true;
+    stateEl.textContent = desired === 'on' ? 'Turning on…' : 'Turning off…';
+    const startedAt = performance.now();
+    try {
+      const result = await request('tools/call', {
+        name: 'control_device',
+        arguments: { deviceId: device.id, state: desired, expectedVersion: device.version }
+      });
+      const updated = result?.structuredContent?.device;
+      if (!updated) throw new Error('no device in result');
+      Object.assign(device, updated);
+      log(`control_device ok in ${Math.round(performance.now() - startedAt)}ms`);
+      setStatus(`${device.name} is now ${device.state === 'on' ? 'On' : 'Off'}.`);
+    } catch (error) {
+      // Restore the confirmed state; never assume the write landed.
+      log(`control_device failed after ${Math.round(performance.now() - startedAt)}ms: ${error.message}`);
+      setStatus(`Could not change ${device.name}: ${error.message}`, 'warn');
+    } finally {
+      sw.disabled = false;
+      sw.setAttribute('aria-checked', String(device.state === 'on'));
+      stateEl.textContent = device.state === 'on' ? 'On' : 'Off';
+      measure();
+    }
+  }
+
+  async function refresh() {
+    setStatus('Refreshing…');
+    try {
+      const result = await request('tools/call', { name: 'list_devices', arguments: {} });
+      devices = result?.structuredContent?.devices ?? [];
+      setStatus(`${devices.length} device${devices.length === 1 ? '' : 's'}.`);
+      render();
+    } catch (error) {
+      // A host that intercepts a 401 runs OAuth and retries; one that does not
+      // surfaces the error here. Which happens is exactly what we are testing.
+      setStatus(`Could not load devices: ${error.message}`, 'warn');
+    }
+  }
+
+  /* -------------------------------------------------------------- lifecycle */
+
+  on('ui/notifications/tool-result', (params) => {
+    const incoming = params?.result?.structuredContent?.devices;
+    if (Array.isArray(incoming)) {
+      devices = incoming;
+      setStatus(`${devices.length} device${devices.length === 1 ? '' : 's'} (from host).`);
+      render();
+    }
+  });
+  on('ui/notifications/host-context-changed', (params) => applyHostContext(params?.hostContext ?? params));
+  on('ui/resource-teardown', () => log('teardown requested by host'));
+
+  $('refresh').addEventListener('click', refresh);
+  $('expand').addEventListener('click', async () => {
+    try {
+      const result = await request('ui/request-display-mode', { mode: 'fullscreen' });
+      log(`display mode granted: ${JSON.stringify(result)}`);
+    } catch (error) {
+      log(`fullscreen refused: ${error.message}`);
+    }
+  });
+  window.addEventListener('resize', measure);
+
+  (async () => {
+    try {
+      const result = await request('ui/initialize', {
+        appCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] }
+      });
+      notify('ui/notifications/initialized', {});
+      $('d-host').textContent =
+        `${result?.hostInfo?.name ?? 'unknown'} ${result?.hostInfo?.version ?? ''}`.trim();
+      $('d-modes').textContent =
+        (result?.hostCapabilities?.availableDisplayModes ?? ['—']).join(', ');
+      applyHostContext(result?.hostContext);
+      setStatus('Connected to host.');
+      if (!devices.length) refresh();
+    } catch (error) {
+      setStatus(`Bridge handshake failed: ${error.message}`, 'warn');
+      measure();
+    }
+  })();
+})();
+</script>
