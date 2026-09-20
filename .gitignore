@@ -23,3 +23,6 @@ DerivedData/
 # Editors
 .vscode/
 .idea/
+
+# PGlite data directory
+.data/

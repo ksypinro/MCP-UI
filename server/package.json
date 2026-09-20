@@ -1,0 +1,23 @@
+{
+  "name": "iot-switch-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Accounts, sessions, and the four device operations for IoT Switch.",
+  "scripts": {
+    "start": "node src/index.ts",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@node-rs/argon2": "^2.0.2",
+    "express": "^5.1.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^22.20.4",
+    "typescript": "^5.9.3"
+  }
+}
