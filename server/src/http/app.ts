@@ -1,0 +1,26 @@
+import express from 'express';
+import type { Express } from 'express';
+import type { Db } from '../db/index.ts';
+import { errorHandler, notFound, withRequestId } from './middleware.ts';
+import { authRoutes } from './routes-auth.ts';
+import { deviceRoutes } from './routes-devices.ts';
+
+export function createApp(db: Db): Express {
+  const app = express();
+  app.disable('x-powered-by');
+  // Off unless deployed behind a proxy we control. Trusting X-Forwarded-For
+  // unconditionally would let any client forge req.ip and walk around the
+  // rate limit on the auth endpoints one fake address at a time.
+  if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY);
+
+  app.use(withRequestId());
+  app.use(express.json({ limit: '64kb' }));
+
+  app.get('/healthz', (_req, res) => res.json({ ok: true }));
+  app.use(authRoutes(db));
+  app.use(deviceRoutes(db));
+
+  app.use(notFound());
+  app.use(errorHandler());
+  return app;
+}
