@@ -1,0 +1,25 @@
+# macOS
+.DS_Store
+
+# Secrets — OAuth client secrets, DB URLs, signing keys
+.env
+.env.*
+!.env.example
+
+# Node / TypeScript
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# Xcode / Swift
+xcuserdata/
+DerivedData/
+*.xcuserstate
+.swiftpm/
+.build/
+
+# Editors
+.vscode/
+.idea/
