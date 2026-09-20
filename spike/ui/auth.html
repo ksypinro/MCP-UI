@@ -1,0 +1,183 @@
+<!--
+  Phase 0 spike: authentication entry card.
+
+  This card deliberately contains NO credential fields. Per the MCP Apps
+  authorization guidance, an app never collects credentials; it calls a
+  protected tool, and the host intercepts the 401 and runs OAuth itself.
+
+  The open question this card exists to answer: does an APP-initiated
+  tools/call raise the host's Connect affordance, or only a model-initiated
+  one? Press "Log In" and watch the bridge log.
+-->
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sign in to IoT Switch</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: var(--font-text-md-size, 15px)/1.45 var(--font-sans, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif);
+    color: var(--color-text-primary, #141413);
+    background: var(--color-background-primary, #fff);
+    padding-top: var(--safe-top, 0px);
+    padding-right: var(--safe-right, 0px);
+    padding-bottom: var(--safe-bottom, 0px);
+    padding-left: var(--safe-left, 0px);
+  }
+  .wrap { padding: 14px; }
+  h1 { font-size: var(--font-heading-md-size, 16px); margin: 0 0 4px; }
+  p { margin: 0 0 14px; color: var(--color-text-secondary, #3d3d3a); font-size: 13px; }
+  .bar { display: flex; gap: 8px; }
+  button {
+    flex: 1; padding: 11px; font-size: 14px; font-weight: 600; cursor: pointer;
+    border-radius: var(--border-radius-md, 8px);
+    border: 1px solid var(--color-border-primary, rgba(31,30,29,.4));
+    background: var(--color-background-secondary, #f5f4ed);
+    color: var(--color-text-primary, #141413);
+  }
+  button.primary { background: var(--color-background-inverse, #141413); color: var(--color-text-inverse, #fff);
+                   border-color: transparent; }
+  button[disabled] { opacity: .55; cursor: progress; }
+  .state { margin-top: 12px; font-size: 13px; }
+  .warn { color: var(--color-text-danger, #7f2c28); }
+  .ok { color: var(--color-text-success, #265b19); }
+  #log { margin-top: 10px; padding: 8px; border-radius: var(--border-radius-md, 8px);
+         background: var(--color-background-secondary, #f5f4ed);
+         font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px;
+         line-height: 1.5; white-space: pre-wrap; max-height: 150px; overflow: auto; }
+</style>
+
+<div class="wrap">
+  <h1>IoT Switch</h1>
+  <p id="lede">You are signed out. Sign up or log in to see and control your devices.</p>
+  <div class="bar">
+    <button class="primary" id="login" type="button">Log In</button>
+    <button id="signup" type="button">Sign Up</button>
+  </div>
+  <p class="state" id="state"></p>
+  <div id="log"></div>
+</div>
+
+<script>
+(() => {
+  'use strict';
+
+  let nextId = 1;
+  const pending = new Map();
+  const notificationHandlers = new Map();
+
+  function log(line) {
+    const el = document.getElementById('log');
+    el.textContent = `${new Date().toISOString().slice(11, 19)}  ${line}\n` + el.textContent;
+  }
+
+  function request(method, params) {
+    const id = nextId++;
+    window.parent.postMessage({ jsonrpc: '2.0', id, method, params }, '*');
+    log(`→ ${method}${params?.name ? ' ' + params.name : ''}`);
+    return new Promise((resolve, reject) => {
+      pending.set(id, { resolve, reject });
+      setTimeout(() => {
+        if (pending.has(id)) {
+          pending.delete(id);
+          // A long silence here is itself a finding: it suggests the host
+          // swallowed the call while it ran an authorization flow.
+          reject(new Error('no response within 60s'));
+        }
+      }, 60000);
+    });
+  }
+
+  function notify(method, params) {
+    window.parent.postMessage({ jsonrpc: '2.0', method, params }, '*');
+  }
+
+  window.addEventListener('message', (event) => {
+    // Only the host may drive this view. Origin is unpredictable inside a
+    // sandbox, so identify the sender by window reference instead.
+    if (event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== '2.0') return;
+    if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+      const waiter = pending.get(msg.id);
+      if (!waiter) return;
+      pending.delete(msg.id);
+      if (msg.error) {
+        log(`← error ${JSON.stringify(msg.error).slice(0, 160)}`);
+        waiter.reject(Object.assign(new Error(msg.error.message || 'error'), { rpc: msg.error }));
+      } else {
+        waiter.resolve(msg.result);
+      }
+      return;
+    }
+    if (msg.method) {
+      log(`← ${msg.method}`);
+      const handler = notificationHandlers.get(msg.method);
+      if (handler) handler(msg.params);
+    }
+  });
+
+  const $ = (id) => document.getElementById(id);
+
+  function setState(text, cls) {
+    const el = $('state');
+    el.textContent = text;
+    el.className = 'state' + (cls ? ' ' + cls : '');
+  }
+
+  /**
+   * Both buttons do the same thing, and that is the point: the card cannot
+   * authenticate anything itself. It asks for a protected READ and lets the
+   * host decide how to obtain credentials. Never trigger authentication with
+   * a mutation — a host that retries after authorizing would perform it.
+   */
+  async function beginAuthorization(mode) {
+    $('login').disabled = true;
+    $('signup').disabled = true;
+    setState(`Asking the host to authorize (${mode})…`);
+    try {
+      const result = await request('tools/call', { name: 'list_devices', arguments: {} });
+      const count = result?.structuredContent?.devices?.length ?? 0;
+      setState(`Authorized. ${count} device${count === 1 ? '' : 's'} visible. Ask for your devices to see them.`, 'ok');
+      log('protected call succeeded — the host holds a token');
+    } catch (error) {
+      setState(`Not authorized: ${error.message}`, 'warn');
+      log('protected call failed — check whether the host offered a Connect prompt');
+    } finally {
+      $('login').disabled = false;
+      $('signup').disabled = false;
+    }
+  }
+
+  $('login').addEventListener('click', () => beginAuthorization('login'));
+  $('signup').addEventListener('click', () => beginAuthorization('signup'));
+
+  notificationHandlers.set('ui/resource-teardown', () => log('teardown requested by host'));
+
+  (async () => {
+    try {
+      const result = await request('ui/initialize', {
+        appCapabilities: { availableDisplayModes: ['inline'] }
+      });
+      notify('ui/notifications/initialized', {});
+      const safe = result?.hostContext?.safeAreaInsets ?? {};
+      for (const [key, name] of Object.entries({ top: 'safe-top', right: 'safe-right', bottom: 'safe-bottom', left: 'safe-left' })) {
+        document.documentElement.style.setProperty(`--${name}`, `${safe[key] ?? 0}px`);
+      }
+      log(`host: ${result?.hostInfo?.name ?? 'unknown'} ${result?.hostInfo?.version ?? ''}`);
+
+      // Public tool: tells us whether the host already holds a token, without
+      // triggering a challenge.
+      const status = await request('tools/call', { name: 'get_auth_status', arguments: {} });
+      if (status?.structuredContent?.authenticated) {
+        const who = status.structuredContent.username ?? 'this account';
+        $('lede').textContent = `Signed in as ${who}.`;
+        setState('Already authorized — ask for your devices.', 'ok');
+      }
+    } catch (error) {
+      setState(`Bridge handshake failed: ${error.message}`, 'warn');
+    }
+  })();
+})();
+</script>
