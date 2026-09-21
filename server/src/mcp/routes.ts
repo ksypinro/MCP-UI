@@ -6,13 +6,14 @@
  * audience. It is not a free choice.
  */
 
-import { Router, type Request, type Response } from 'express';
+import { createHash } from 'node:crypto';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Db } from '../db/index.ts';
-import { context } from '../http/middleware.ts';
+import { context, rateLimit } from '../http/middleware.ts';
 import { MCP_PATH, SERVER_INFO } from './config.ts';
-import { gate } from './gate.ts';
+import { bearerFrom, gate } from './gate.ts';
 import { registerDeviceTools } from './tools.ts';
 import type { Identity } from '../domain/types.ts';
 
@@ -26,6 +27,25 @@ function buildServer(db: Db, identity: Identity | null): McpServer {
 
 export function mcpRoutes(db: Db): Router {
   const router = Router();
+
+  // Discovery has to work without a token, which makes it the one part of
+  // this endpoint an attacker can drive without an account — and each request
+  // builds a server and compiles five schemas. So anonymous traffic is
+  // bounded by address.
+  //
+  // Authenticated traffic is bounded by token instead. A host calls this from
+  // its own infrastructure on behalf of every one of its users, so an
+  // address-keyed limit would throttle all of them together the moment the
+  // integration became popular.
+  const anonymousLimiter = rateLimit(60, 60_000, (req) => `mcp-anon:${req.ip ?? 'unknown'}`);
+  const tokenLimiter = rateLimit(600, 60_000, (req) => {
+    const token = bearerFrom(req) ?? '';
+    return `mcp-token:${createHash('sha256').update(token).digest('hex')}`;
+  });
+
+  router.post(MCP_PATH, (req: Request, res: Response, next: NextFunction) => {
+    (bearerFrom(req) ? tokenLimiter : anonymousLimiter)(req, res, next);
+  });
 
   router.post(MCP_PATH, async (req: Request, res: Response) => {
     const requestId = context(res)?.requestId ?? 'req_mcp';

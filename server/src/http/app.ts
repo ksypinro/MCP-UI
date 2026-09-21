@@ -6,6 +6,7 @@ import { authRoutes } from './routes-auth.ts';
 import { deviceRoutes } from './routes-devices.ts';
 import { oauthRoutes } from '../oauth/routes.ts';
 import { mcpRoutes } from '../mcp/routes.ts';
+import { MCP_PATH } from '../mcp/config.ts';
 
 export function createApp(db: Db): Express {
   const app = express();
@@ -38,6 +39,6 @@ export function createApp(db: Db): Express {
   app.use(deviceRoutes(db));
 
   app.use(notFound());
-  app.use(errorHandler());
+  app.use(errorHandler({ jsonRpcPaths: [MCP_PATH] }));
   return app;
 }

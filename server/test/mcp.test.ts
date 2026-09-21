@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 import { SCOPES } from '../src/oauth/config.ts';
 import { startServer, type Harness } from './oauth-helpers.ts';
 import {
-  callTool, initialize, isToolError, rpc, structured, toolsList, tokenFor
+  callTool, initialize, isToolError, rpc, structured, toolsList, tokenFor, tokenForExisting
 } from './mcp-helpers.ts';
 
 let h: Harness;
@@ -282,4 +282,76 @@ test('only POST is accepted at the endpoint', async () => {
   const get = await fetch(`${h.base}/mcp`);
   assert.equal(get.status, 405);
   assert.equal(get.headers.get('allow'), 'POST');
+});
+
+/* ------------------------------------------------- review regression tests */
+
+test('a batch cannot smuggle a call the token is not scoped for', async () => {
+  // Confirmed exploitable before this was fixed: the gate authorized only the
+  // first protected call in the body while the SDK executed all of them, so a
+  // devices:read token changed a device by sending [list_devices,
+  // control_device] in one array.
+  const owner = await tokenFor(h);
+  const device = structured(
+    await callTool(h.base, 'add_device', { name: 'Smuggle Target' }, owner.accessToken)
+  ).device;
+
+  const readOnly = await tokenForExisting(h, owner.username, 'devices:read');
+
+  const batched = await rpc(h.base, [
+    { jsonrpc: '2.0', id: 800, method: 'tools/call', params: { name: 'list_devices', arguments: {} } },
+    {
+      jsonrpc: '2.0', id: 801, method: 'tools/call',
+      params: {
+        name: 'control_device',
+        arguments: { deviceId: device.id, state: 'on', expectedVersion: device.version }
+      }
+    }
+  ], readOnly);
+
+  assert.equal(batched.status, 403, 'the batch is refused as a whole');
+  assert.match(batched.headers.get('www-authenticate') ?? '', /insufficient_scope/);
+
+  const after = structured(
+    await callTool(h.base, 'get_device', { deviceId: device.id }, owner.accessToken)
+  ).device;
+  assert.equal(after.state, 'off', 'nothing was mutated');
+  assert.equal(after.version, device.version);
+});
+
+test('a batch the token is fully scoped for still works', async () => {
+  const owner = await tokenFor(h);
+  const device = structured(
+    await callTool(h.base, 'add_device', { name: 'Batch Ok' }, owner.accessToken)
+  ).device;
+
+  const batched = await rpc(h.base, [
+    { jsonrpc: '2.0', id: 810, method: 'tools/call', params: { name: 'list_devices', arguments: {} } },
+    {
+      jsonrpc: '2.0', id: 811, method: 'tools/call',
+      params: { name: 'control_device', arguments: { deviceId: device.id, state: 'on', expectedVersion: 1 } }
+    }
+  ], owner.accessToken);
+
+  assert.equal(batched.status, 200);
+  const results = batched.body as any[];
+  assert.equal(results.length, 2);
+  assert.equal(
+    results.find((entry) => entry.id === 811).result.structuredContent.device.state, 'on'
+  );
+});
+
+test('a malformed body answers in JSON-RPC, not the REST envelope', async () => {
+  const response = await fetch(`${h.base}/mcp`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: '{not json'
+  });
+  const body = await response.json() as any;
+
+  assert.equal(response.status, 400);
+  // An MCP client has no reason to understand the REST error envelope, and
+  // the transport itself already answers other bad requests in this dialect.
+  assert.equal(body.jsonrpc, '2.0');
+  assert.equal(body.error.code, -32700);
 });

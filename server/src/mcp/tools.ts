@@ -38,6 +38,14 @@ function describe(device: Device): string {
 /**
  * Business failures are tool results, not transport failures.
  *
+ * Note that argument validation is the one failure class that does NOT come
+ * through here: the SDK rejects a bad enum or a missing field before the
+ * handler runs, and returns isError with a text message and no
+ * structuredContent. Anything reading structuredContent.error.code must
+ * tolerate its absence. Loosening the published schema to route validation
+ * through this function would be worse — hosts use the declared enum to
+ * check a call before making it.
+ *
  * A version conflict or a name clash is a normal outcome the model should see
  * and act on. Only missing or insufficient authorization is a transport
  * error, because only that has a challenge a host can act on. Spec sections
@@ -205,16 +213,23 @@ export function registerDeviceTools(server: McpServer, db: Db, identity: Identit
       _meta: { ui: { visibility: ['app'] } }
     },
     async () => {
-      const account = identity ? await getAccount(db, identity.accountId) : null;
-      return {
-        content: [{
-          type: 'text',
-          text: account ? `Signed in as ${account.username}.` : 'Not signed in.'
-        }],
-        structuredContent: account
-          ? { authenticated: true, accountId: account.id, username: account.username }
-          : { authenticated: false }
-      };
+      try {
+        const account = identity ? await getAccount(db, identity.accountId) : null;
+        return {
+          content: [{
+            type: 'text',
+            text: account ? `Signed in as ${account.username}.` : 'Not signed in.'
+          }],
+          structuredContent: account
+            ? { authenticated: true, accountId: account.id, username: account.username }
+            : { authenticated: false }
+        };
+      } catch (error) {
+        // Unguarded, an error here escapes to the SDK, which surfaces its
+        // message as tool text — model-visible and user-visible. This is also
+        // the only public tool, so it is reachable without a token.
+        return toolError(error);
+      }
     }
   );
 }
