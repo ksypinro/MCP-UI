@@ -9,7 +9,8 @@
     "test": "node --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "acceptance": "node acceptance/report.mjs",
-    "host-check": "node tools/host-check/run.mjs"
+    "host-check": "node tools/host-check/run.mjs",
+    "client-check": "node tools/client-check/run.mjs"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",

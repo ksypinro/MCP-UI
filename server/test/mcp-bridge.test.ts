@@ -150,7 +150,10 @@ test('a tool error carries its code through to the view', async () => {
     result: {
       isError: true,
       content: [{ type: 'text', text: 'This device changed.' }],
-      structuredContent: { error: { code: 'DEVICE_VERSION_CONFLICT', message: 'This device changed.' } }
+      // In _meta, not structuredContent: a client validates structuredContent
+      // against the tool's output schema whenever it is present, and an error
+      // is not the shape that schema describes.
+      _meta: { 'iot/error': { code: 'DEVICE_VERSION_CONFLICT', message: 'This device changed.' } }
     }
   });
 

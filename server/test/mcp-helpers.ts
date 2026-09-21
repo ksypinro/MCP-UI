@@ -107,3 +107,15 @@ export function structured(response: RpcResponse): any {
 export function isToolError(response: RpcResponse): boolean {
   return response.body?.result?.isError === true;
 }
+
+/**
+ * The error code from a tool result.
+ *
+ * It travels in _meta rather than structuredContent: a client validates
+ * structuredContent against the tool's declared output schema whenever it is
+ * present, including on an error result, and an error is not the shape that
+ * schema describes.
+ */
+export function errorCode(response: RpcResponse): string | undefined {
+  return response.body?.result?._meta?.['iot/error']?.code;
+}

@@ -179,6 +179,23 @@ inline card, whether every write is confirmed — and the report names each gap
 rather than letting a green suite imply the product is finished.
 
 ```bash
+npm run client-check
+```
+
+Connects the way a specification-compliant MCP client does, using the official
+SDK's own client, transport and OAuth implementation — discovery, registration,
+PKCE, the token exchange and bearer attachment are all its code, not ours. It
+stands in for the person only where a real client opens a browser.
+
+Everything else in the suite drives the endpoints directly, which proves they
+behave as intended but not that a real client can find its way through them.
+This found a bug nothing else did: a client validates `structuredContent`
+against a tool's declared `outputSchema` whenever it is present, **including on
+an error result**, so every version conflict reached it as "structured content
+does not match the tool's output schema" rather than as the conflict. Error
+codes now travel in `_meta`, which is not schema-bound.
+
+```bash
 npm run host-check
 ```
 
