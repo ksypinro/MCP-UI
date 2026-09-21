@@ -5,6 +5,8 @@ import { errorHandler, notFound, withRequestId } from './middleware.ts';
 import { authRoutes } from './routes-auth.ts';
 import { deviceRoutes } from './routes-devices.ts';
 import { oauthRoutes } from '../oauth/routes.ts';
+import { mcpRoutes } from '../mcp/routes.ts';
+import { MCP_PATH } from '../mcp/config.ts';
 
 export function createApp(db: Db): Express {
   const app = express();
@@ -28,10 +30,15 @@ export function createApp(db: Db): Express {
   // documents live at well-known paths that cannot be moved.
   app.use(oauthRoutes(db));
 
+  // The MCP endpoint. Its own authorization gate runs inside, on the parsed
+  // body, because a refusal there has to be an HTTP status rather than a tool
+  // result.
+  app.use(mcpRoutes(db));
+
   app.use(authRoutes(db));
   app.use(deviceRoutes(db));
 
   app.use(notFound());
-  app.use(errorHandler());
+  app.use(errorHandler({ jsonRpcPaths: [MCP_PATH] }));
   return app;
 }

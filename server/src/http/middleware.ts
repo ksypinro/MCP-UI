@@ -115,35 +115,62 @@ export function notFound(): RequestHandler {
  * The single place an error becomes a response body. Spec section 6.3: a
  * closed set of codes, a correlation id, and never an internal stack trace.
  */
-export function errorHandler() {
-  return (error: unknown, _req: Request, res: Response, next: NextFunction) => {
+export function errorHandler(options: { jsonRpcPaths?: string[] } = {}) {
+  const jsonRpcPaths = new Set(options.jsonRpcPaths ?? []);
+
+  return (error: unknown, req: Request, res: Response, next: NextFunction) => {
     if (res.headersSent) return next(error);
 
     const requestId = context(res)?.requestId ?? 'req_unknown';
 
+    // The MCP endpoint speaks JSON-RPC. Answering it with the REST envelope
+    // hands an MCP client a shape it has no reason to understand, and one
+    // that differs from what the transport itself returns on the same path.
+    const wantsJsonRpc = jsonRpcPaths.has(req.path);
+
+    const send = (status: number, rpcCode: number, message: string, appCode?: string) => {
+      if (wantsJsonRpc) {
+        res.status(status).json({
+          jsonrpc: '2.0',
+          error: { code: rpcCode, message, ...(appCode ? { data: { code: appCode, requestId } } : { data: { requestId } }) },
+          id: null
+        });
+      } else {
+        const appError = new AppError((appCode as never) ?? 'INTERNAL_ERROR', message);
+        res.status(status).json(appError.toBody(requestId));
+      }
+    };
+
+    // Application errors keep their status and code in both dialects. Folding
+    // them into the generic branch turned a rate limit into a 500.
     if (isAppError(error)) {
-      res.status(error.status).json(error.toBody(requestId));
+      if (wantsJsonRpc) {
+        res.status(error.status).json({
+          jsonrpc: '2.0',
+          error: { code: -32000, message: error.message, data: { code: error.code, requestId } },
+          id: null
+        });
+      } else {
+        res.status(error.status).json(error.toBody(requestId));
+      }
       return;
     }
 
     // body-parser rejections are the client's mistake, not ours. Key on its
     // `type`, not on the error class: only a parse failure is a SyntaxError,
-    // so matching on the class alone sends an oversized body to the 500 branch
-    // and tells the caller the server broke.
+    // so matching on the class alone sends an oversized body to the 500
+    // branch and tells the caller the server broke.
     const parserType = (error as { type?: string })?.type;
     if (parserType === 'entity.too.large') {
-      const tooLarge = new AppError('VALIDATION_FAILED', 'Request body is too large.');
-      res.status(413).json(tooLarge.toBody(requestId));
+      send(413, -32600, 'Request body is too large.', 'VALIDATION_FAILED');
       return;
     }
     if (parserType === 'entity.parse.failed' || parserType === 'encoding.unsupported') {
-      const malformed = new AppError('MALFORMED_REQUEST');
-      res.status(malformed.status).json(malformed.toBody(requestId));
+      send(400, -32700, wantsJsonRpc ? 'Parse error' : 'The request body could not be read.', 'MALFORMED_REQUEST');
       return;
     }
 
     process.stderr.write(`[error] ${requestId} ${String((error as Error)?.stack ?? error)}\n`);
-    const internal = new AppError('INTERNAL_ERROR');
-    res.status(internal.status).json(internal.toBody(requestId));
+    send(500, -32603, wantsJsonRpc ? 'Internal error' : 'Unexpected error.', 'INTERNAL_ERROR');
   };
 }
