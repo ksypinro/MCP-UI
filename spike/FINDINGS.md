@@ -2,9 +2,13 @@
 
 **Status: not yet run against a host.**
 
-The server side is built and verified (`node smoke.mjs`, 46/46). Everything
-below requires a human with a Claude account, a ChatGPT account on a paid plan,
-and an iPhone. Nothing here may be filled in from expectation — only from
+**Run these against `../server`, not against this spike** — phases 3 and 4
+replaced the spike's stub backend with the real one. The two exceptions are Q2
+and Q3, which need the spike's `ui://` resources because the real server has
+none until phase 5. See [README.md](./README.md) for which is which.
+
+Everything below requires a human with a Claude account, a ChatGPT account on a
+paid plan, and an iPhone. Nothing here may be filled in from expectation — only from
 observation. An unanswered question is a better outcome than a guessed one.
 
 Record for each host: app version, account plan, and test date. Section 12 of
