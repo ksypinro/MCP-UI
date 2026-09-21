@@ -19,6 +19,7 @@ import { addDevice, controlDevice, getDevice, listDevices } from '../domain/devi
 import { getAccount } from '../domain/accounts.ts';
 import type { Device, Identity } from '../domain/types.ts';
 import { SERVER_INFO } from './config.ts';
+import { DEVICES_URI, DEVICE_URI, uiToolMeta } from './ui/index.ts';
 
 const deviceShape = {
   id: z.string(),
@@ -76,7 +77,7 @@ export function registerDeviceTools(server: McpServer, db: Db, identity: Identit
       inputSchema: {},
       outputSchema: { devices: z.array(deviceObject) },
       annotations: READ_ONLY,
-      _meta: { ui: { visibility: ['model', 'app'] } }
+      _meta: uiToolMeta(DEVICES_URI)
     },
     async () => {
       if (!identity) return toolError(unauthenticated());
@@ -108,7 +109,7 @@ export function registerDeviceTools(server: McpServer, db: Db, identity: Identit
       inputSchema: { deviceId: z.string().min(1).describe('The device id, from list_devices.') },
       outputSchema: { device: deviceObject },
       annotations: READ_ONLY,
-      _meta: { ui: { visibility: ['model', 'app'] } }
+      _meta: uiToolMeta(DEVICE_URI)
     },
     async ({ deviceId }) => {
       if (!identity) return toolError(unauthenticated());

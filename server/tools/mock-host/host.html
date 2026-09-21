@@ -1,0 +1,106 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Mock MCP Apps host</title>
+<style>
+  body { font: 14px -apple-system, sans-serif; margin: 0; background: #e9e8e3; color: #141413; }
+  header { padding: 10px 14px; background: #fff; border-bottom: 1px solid #d8d6cc; display: flex; gap: 10px; align-items: center; }
+  select, button { font: inherit; padding: 5px 8px; }
+  .stage { padding: 16px; display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .card { width: 402px; background: #fff; border: 1px solid #d8d6cc; border-radius: 12px; overflow: hidden; }
+  .card h2 { font-size: 12px; margin: 0; padding: 6px 10px; background: #f5f4ed; color: #73726c; font-weight: 600; }
+  iframe { display: block; width: 100%; border: 0; }
+  #log { width: 420px; max-height: 70vh; overflow: auto; background: #1f1e1d; color: #dedcd1;
+         font: 11px/1.5 ui-monospace, monospace; padding: 10px; border-radius: 12px; white-space: pre-wrap; }
+</style>
+<header>
+  <strong>Mock MCP Apps host</strong>
+  <label>view <select id="view">
+    <option value="devices">devices</option>
+    <option value="device">device</option>
+    <option value="auth">auth</option>
+    <option value="add-device">add-device</option>
+  </select></label>
+  <button id="reload">reload</button>
+  <span id="size"></span>
+</header>
+<div class="stage">
+  <div class="card"><h2 id="label">devices</h2><iframe id="frame" src="devices.html" height="400"></iframe></div>
+  <div id="log"></div>
+</div>
+<script>
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+const SERVER = '/mcp';
+const frame = document.getElementById('frame');
+const logEl = document.getElementById('log');
+let rpcId = 1000;
+
+function log(line, kind) {
+  logEl.textContent = `${new Date().toISOString().slice(11,19)} ${kind} ${line}\n` + logEl.textContent;
+}
+
+function reply(id, result) { frame.contentWindow.postMessage({ jsonrpc: '2.0', id, result }, '*'); }
+function replyError(id, message) { frame.contentWindow.postMessage({ jsonrpc: '2.0', id, error: { code: -32000, message } }, '*'); }
+function push(method, params) { frame.contentWindow.postMessage({ jsonrpc: '2.0', method, params }, '*'); }
+
+window.addEventListener('message', async (event) => {
+  const msg = event.data;
+  if (!msg || msg.jsonrpc !== '2.0' || !msg.method) return;
+  log(`→ ${msg.method}${msg.params && msg.params.name ? ' ' + msg.params.name : ''}`, 'view');
+
+  if (msg.method === 'ui/initialize') {
+    reply(msg.id, {
+      hostInfo: { name: 'mock-host', version: '0.0.1' },
+      hostCapabilities: { availableDisplayModes: ['inline', 'fullscreen'] },
+      hostContext: { theme: 'light', displayMode: 'inline',
+                     safeAreaInsets: { top: 0, right: 0, bottom: 0, left: 0 } }
+    });
+    return;
+  }
+  if (msg.method === 'ui/notifications/initialized') { log('handshake complete', 'host'); return; }
+
+  if (msg.method === 'ui/notifications/size-changed') {
+    document.getElementById('size').textContent = `content ${msg.params.width}x${msg.params.height}`;
+    frame.height = msg.params.height;
+    return;
+  }
+
+  if (msg.method === 'ui/request-display-mode') {
+    log(`display mode -> ${msg.params.mode}`, 'host');
+    reply(msg.id, { mode: msg.params.mode });
+    push('ui/notifications/host-context-changed', { hostContext: {
+      theme: 'light', displayMode: msg.params.mode,
+      safeAreaInsets: { top: 0, right: 0, bottom: 0, left: 0 } } });
+    return;
+  }
+
+  if (msg.method === 'tools/call') {
+    try {
+      const res = await fetch(SERVER, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream',
+                   ...(TOKEN ? { authorization: 'Bearer ' + TOKEN } : {}) },
+        body: JSON.stringify({ jsonrpc: '2.0', id: rpcId++, method: 'tools/call', params: msg.params })
+      });
+      if (res.status === 401 || res.status === 403) {
+        log(`server answered ${res.status} — a real host would run OAuth here`, 'host');
+        replyError(msg.id, 'Not authorized');
+        return;
+      }
+      const body = await res.json();
+      log(`← ${msg.params.name} ${res.status}`, 'server');
+      reply(msg.id, body.result);
+    } catch (e) {
+      replyError(msg.id, e.message);
+    }
+    return;
+  }
+
+  if (msg.id !== undefined) replyError(msg.id, 'unsupported: ' + msg.method);
+});
+
+document.getElementById('view').addEventListener('change', (e) => {
+  document.getElementById('label').textContent = e.target.value;
+  frame.src = e.target.value + '.html';
+});
+document.getElementById('reload').addEventListener('click', () => { frame.src = frame.src; });
+</script>
