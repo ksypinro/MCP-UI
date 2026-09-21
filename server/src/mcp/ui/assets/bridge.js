@@ -133,12 +133,15 @@
       return request('tools/call', { name: name, arguments: args || {} }).then(function (result) {
         if (result && result.isError) {
           var text = result.content && result.content[0] && result.content[0].text;
-          var structured = result.structuredContent || {};
-          var error = new Error((structured.error && structured.error.message) || text || 'That did not work.');
-          // Argument validation is rejected by the server SDK before our
-          // handler runs and carries no structuredContent, so the code may
-          // legitimately be absent.
-          error.code = structured.error && structured.error.code;
+          // The code travels in _meta rather than structuredContent, because a
+          // client validates structuredContent against the tool's output
+          // schema whenever it is present — including on an error, where the
+          // schema describes a shape the error is not.
+          var meta = (result._meta && result._meta['iot/error']) || {};
+          var error = new Error(meta.message || text || 'That did not work.');
+          // Argument validation is rejected before our handler runs and
+          // carries no code at all, so it may legitimately be absent.
+          error.code = meta.code;
           throw error;
         }
         return (result && result.structuredContent) || {};

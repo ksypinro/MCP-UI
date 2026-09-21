@@ -52,13 +52,25 @@ function describe(device: Device): string {
  * error, because only that has a challenge a host can act on. Spec sections
  * 7.5 and 8.3.
  */
+/** The namespaced key an error code travels under. */
+export const ERROR_META_KEY = 'iot/error';
+
 function toolError(error: unknown) {
   const code = isAppError(error) ? error.code : 'INTERNAL_ERROR';
   const message = isAppError(error) ? error.message : 'Unexpected error.';
   return {
     isError: true as const,
     content: [{ type: 'text' as const, text: message }],
-    structuredContent: { error: { code, message } }
+    // Deliberately no structuredContent.
+    //
+    // A client validates structuredContent against the declared outputSchema
+    // whenever it is present, including on an error result — the SDK's own
+    // client throws a protocol error rather than surfacing the tool error, so
+    // every version conflict and name clash would reach a host as "structured
+    // content does not match the tool's output schema" instead of something a
+    // person could act on. The schema describes a success; an error is not
+    // one. The code travels in _meta, which is not schema-bound.
+    _meta: { [ERROR_META_KEY]: { code, message } }
   };
 }
 

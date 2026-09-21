@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { SCOPES } from '../src/oauth/config.ts';
 import { startServer, type Harness } from './oauth-helpers.ts';
 import {
-  callTool, initialize, isToolError, rpc, structured, toolsList, tokenFor, tokenForExisting
+  callTool, errorCode, initialize, isToolError, rpc, structured, toolsList,
+  tokenFor, tokenForExisting
 } from './mcp-helpers.ts';
 
 let h: Harness;
@@ -204,7 +205,7 @@ test('a stale version is a tool error, not a transport error', async () => {
   // challenge a host can do something with.
   assert.equal(stale.status, 200);
   assert.ok(isToolError(stale));
-  assert.equal(structured(stale).error.code, 'DEVICE_VERSION_CONFLICT');
+  assert.equal(errorCode(stale), 'DEVICE_VERSION_CONFLICT');
 });
 
 test('a duplicate name and an unknown device are predictable tool errors', async () => {
@@ -212,10 +213,10 @@ test('a duplicate name and an unknown device are predictable tool errors', async
   await callTool(h.base, 'add_device', { name: 'Porch Light' }, mine);
 
   const duplicate = await callTool(h.base, 'add_device', { name: 'porch light' }, mine);
-  assert.equal(structured(duplicate).error.code, 'DEVICE_NAME_CONFLICT');
+  assert.equal(errorCode(duplicate), 'DEVICE_NAME_CONFLICT');
 
   const missing = await callTool(h.base, 'get_device', { deviceId: 'dev_nope' }, mine);
-  assert.equal(structured(missing).error.code, 'DEVICE_NOT_FOUND');
+  assert.equal(errorCode(missing), 'DEVICE_NOT_FOUND');
 });
 
 test('invalid arguments are rejected before the service sees them', async () => {
@@ -237,13 +238,13 @@ test('one account cannot see or touch another account\'s devices', async () => {
   assert.deepEqual(structured(await callTool(h.base, 'list_devices', {}, bob)).devices, []);
 
   const peek = await callTool(h.base, 'get_device', { deviceId: hers.id }, bob);
-  assert.equal(structured(peek).error.code, 'DEVICE_NOT_FOUND',
+  assert.equal(errorCode(peek), 'DEVICE_NOT_FOUND',
     'another account\'s device is indistinguishable from one that does not exist');
 
   const grab = await callTool(
     h.base, 'control_device', { deviceId: hers.id, state: 'on', expectedVersion: 1 }, bob
   );
-  assert.equal(structured(grab).error.code, 'DEVICE_NOT_FOUND');
+  assert.equal(errorCode(grab), 'DEVICE_NOT_FOUND');
 
   const untouched = await callTool(h.base, 'get_device', { deviceId: hers.id }, alice);
   assert.equal(structured(untouched).device.state, 'off');
@@ -357,4 +358,31 @@ test('a malformed body answers in JSON-RPC, not the REST envelope', async () => 
   // the transport itself already answers other bad requests in this dialect.
   assert.equal(body.jsonrpc, '2.0');
   assert.equal(body.error.code, -32700);
+});
+
+test('an error result carries no structuredContent', async () => {
+  /*
+   * A client validates structuredContent against the tool's declared output
+   * schema whenever it is present — including on an error. Found by driving
+   * the server with the official SDK client: every version conflict came back
+   * to it as "structured content does not match the tool's output schema"
+   * rather than as the conflict, because the schema describes a device and an
+   * error is not one.
+   */
+  const mine = (await tokenFor(h)).accessToken;
+  const device = structured(
+    await callTool(h.base, 'add_device', { name: 'Schema Guard' }, mine)
+  ).device;
+  await callTool(h.base, 'control_device',
+    { deviceId: device.id, state: 'on', expectedVersion: 1 }, mine);
+
+  const stale = await callTool(h.base, 'control_device',
+    { deviceId: device.id, state: 'off', expectedVersion: 1 }, mine);
+
+  assert.ok(isToolError(stale));
+  assert.equal(stale.body.result.structuredContent, undefined,
+    'an error must not carry content the output schema will reject');
+  assert.equal(errorCode(stale), 'DEVICE_VERSION_CONFLICT',
+    'and the code must still reach the caller');
+  assert.match(stale.body.result.content[0].text, /changed/i);
 });
