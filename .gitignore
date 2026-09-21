@@ -26,3 +26,8 @@ DerivedData/
 
 # PGlite data directory
 .data/
+
+# Xcode
+xcuserdata/
+DerivedData/
+*.xcuserstate
