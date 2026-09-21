@@ -160,6 +160,33 @@ because the views cannot otherwise be looked at, and it earned its place
 immediately — it found a handler-registry collision in the bridge that every
 unit test passed straight over.
 
+## Acceptance
+
+```bash
+npm run acceptance
+```
+
+Runs the suite and reports which of the 28 criteria in section 12 of
+`../requirement.md` it establishes, which are only partly established, and
+which cannot be established from here at all.
+
+It fails if a criterion's evidence goes missing, becomes ambiguous, or starts
+failing, so renaming a test drops its criterion loudly rather than quietly.
+
+It deliberately cannot print all green. Eight criteria need a host account or a
+physical device — whether a host renders the views, how many rows survive an
+inline card, whether every write is confirmed — and the report names each gap
+rather than letting a green suite imply the product is finished.
+
+```bash
+npm run host-check
+```
+
+Opens a tunnel, starts the server told the origin it is reachable at, verifies
+discovery and the `401` challenge over real HTTPS, and prints the connector URL
+with the checklist. The point is that everything that can fail without a host
+has already failed by the time you paste that URL anywhere.
+
 ## On PGlite
 
 The store is [PGlite](https://pglite.dev): real PostgreSQL compiled to

@@ -2,9 +2,23 @@
 
 **Status: not yet run against a host.**
 
-The server side is built and verified (`node smoke.mjs`, 46/46). Everything
-below requires a human with a Claude account, a ChatGPT account on a paid plan,
-and an iPhone. Nothing here may be filled in from expectation — only from
+**Start here:**
+
+```bash
+cd ../server && npm run host-check
+```
+
+That opens a tunnel, starts the server told the origin it is reachable at,
+verifies the whole discovery chain over real HTTPS, and prints the connector
+URL with what to look for. Everything that can fail without a host will have
+failed before you involve one, so what is left is exactly these questions.
+
+All six now run against `../server`: phase 5 gave it the `ui://` views, which
+were the only reason two of them still needed the spike. The spike's own
+backend is superseded entirely — see [README.md](./README.md).
+
+Everything below requires a human with a Claude account, a ChatGPT account on a
+paid plan, and an iPhone. Nothing here may be filled in from expectation — only from
 observation. An unanswered question is a better outcome than a guessed one.
 
 Record for each host: app version, account plan, and test date. Section 12 of
