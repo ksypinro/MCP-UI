@@ -2,10 +2,20 @@
 
 **Status: not yet run against a host.**
 
-**Run these against `../server`, not against this spike** — phases 3 and 4
-replaced the spike's stub backend with the real one. The two exceptions are Q2
-and Q3, which need the spike's `ui://` resources because the real server has
-none until phase 5. See [README.md](./README.md) for which is which.
+**Start here:**
+
+```bash
+cd ../server && npm run host-check
+```
+
+That opens a tunnel, starts the server told the origin it is reachable at,
+verifies the whole discovery chain over real HTTPS, and prints the connector
+URL with what to look for. Everything that can fail without a host will have
+failed before you involve one, so what is left is exactly these questions.
+
+All six now run against `../server`: phase 5 gave it the `ui://` views, which
+were the only reason two of them still needed the spike. The spike's own
+backend is superseded entirely — see [README.md](./README.md).
 
 Everything below requires a human with a Claude account, a ChatGPT account on a
 paid plan, and an iPhone. Nothing here may be filled in from expectation — only from
