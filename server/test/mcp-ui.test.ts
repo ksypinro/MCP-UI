@@ -6,6 +6,13 @@
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { uiResources } from '../src/mcp/ui/index.ts';
+
+/** Exact, because 'ui://iot/add-device.html' also ends with 'device.html'. */
+function view(name: 'auth' | 'devices' | 'device' | 'add-device') {
+  const found = uiResources().find((resource) => resource.uri === `ui://iot/${name}.html`);
+  if (!found) throw new Error(`no view named ${name}`);
+  return found;
+}
 import { startServer, type Harness } from './oauth-helpers.ts';
 import { callTool, rpc, structured, toolsList, tokenFor } from './mcp-helpers.ts';
 
@@ -182,7 +189,7 @@ test('views take safe areas from the host, not from CSS env()', () => {
 });
 
 test('views use host style tokens rather than hardcoded colour', () => {
-  const html = uiResources().find((view) => view.uri.endsWith('devices.html'))!.html;
+  const html = view('devices').html;
   assert.match(html, /var\(--color-text-primary/);
   assert.match(html, /var\(--color-background-primary/);
 });
@@ -190,7 +197,7 @@ test('views use host style tokens rather than hardcoded colour', () => {
 /* ----------------------------------------------------- AC-28: inline list */
 
 test('the device list bounds what it renders inline and can ask for more', () => {
-  const html = uiResources().find((view) => view.uri.endsWith('devices.html'))!.html;
+  const html = view('devices').html;
 
   // On a phone the conversation owns vertical scrolling and the host clips
   // inline overflow, so a long list rendered inline is partly unreachable.
@@ -203,7 +210,7 @@ test('the device list bounds what it renders inline and can ask for more', () =>
 });
 
 test('the auth view contains no credential fields', () => {
-  const html = uiResources().find((view) => view.uri.endsWith('auth.html'))!.html;
+  const html = view('auth').html;
   // Spec section 7.4: credentials are typed on the hosted authorization page
   // and nowhere else. A widget cannot authenticate an MCP connection.
   assert.doesNotMatch(html, /type\s*=\s*["']password["']/i);
@@ -211,4 +218,45 @@ test('the auth view contains no credential fields', () => {
   assert.match(html, /list_devices/, 'it asks for a protected read to trigger the host challenge');
   assert.doesNotMatch(html, /control_device|add_device/,
     'authentication must never be triggered by a mutation');
+});
+
+/* ------------------------------------------------- review regression tests */
+
+test('a refresh asked to keep the message never clears it', () => {
+  /*
+   * Source-level, deliberately. This bug was found by rendering the view in
+   * tools/mock-host and watching the status area, not by any assertion here:
+   * the conflict handler set a message and then called a refresh whose
+   * success branch cleared it, so the explanation existed for a few hundred
+   * milliseconds and was never seen. Sampling the element twenty-four times
+   * caught it empty every time.
+   *
+   * Reproducing that in a unit test needs a DOM; what is cheap to guard is
+   * the shape of the mistake — an unguarded clear inside the reload.
+   */
+  for (const controlling of [view('devices'), view('device')]) {
+    assert.match(controlling.html, /keepMessage/, `${controlling.uri} lost the keepMessage flag`);
+    // The inverted flag that caused it.
+    assert.doesNotMatch(controlling.html, /options\.quiet/, `${controlling.uri} still has the quiet flag`);
+    // Every status write inside a reload has to be guarded by it.
+    assert.doesNotMatch(controlling.html, /if \(options\.quiet\) say\(/, controlling.uri);
+  }
+});
+
+test('a version conflict explains itself with what the device actually is', () => {
+  // Spec section 5.6 step 7: refetch *and* explain. Reporting only that they
+  // were too late leaves the person guessing what the device is now.
+  for (const controlling of [view('devices'), view('device')]) {
+    assert.match(controlling.html, /changed somewhere else, so your change was not applied/, controlling.uri);
+    assert.match(controlling.html, /It is now /, `${controlling.uri} omits the reconciled state`);
+  }
+});
+
+test('the detail view does not offer a refresh before it has a device', () => {
+  const html = view('device').html;
+  // The view learns which device it is showing from a host-pushed tool
+  // result. Until one arrives the control cannot do anything, and a button
+  // that silently does nothing is worse than one that is plainly unavailable.
+  assert.match(html, /id="refresh" type="button" disabled/);
+  assert.match(html, /\$\('refresh'\)\.disabled = false;/);
 });

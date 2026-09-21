@@ -31,6 +31,7 @@
     sw.setAttribute('aria-label', device.name);
     sw.disabled = Boolean(pending);
 
+    $('refresh').disabled = false;
     $('id').textContent = device.id;
     $('updated').textContent = formatTime(device.updatedAt);
     $('detail').hidden = false;
@@ -60,8 +61,12 @@
       say('');
     }).catch(function (error) {
       if (error.code === 'DEVICE_VERSION_CONFLICT') {
-        say('This device changed somewhere else. Refreshing…');
-        return refresh({ quiet: true });
+        // Refetch first, then explain with what it actually is. Saying it
+        // before the refresh meant the refresh cleared it again.
+        return refresh({ keepMessage: true }).then(function (fresh) {
+          say('This device was changed somewhere else, so your change was not applied.'
+            + (fresh && device ? ' It is now ' + label(device.state) + '.' : ''), true);
+        });
       }
       if (error.code === 'DEVICE_NOT_FOUND') {
         say('This device is no longer available on this account.', true);
@@ -74,15 +79,27 @@
     });
   }
 
+  /**
+   * Reloads the device. Resolves true when fresh data arrived.
+   *
+   * `keepMessage` means leave the status alone: the caller has something to
+   * say that matters more than anything reported here.
+   */
   function refresh(options) {
     options = options || {};
-    if (!device) return Promise.resolve();
+    var keep = Boolean(options.keepMessage);
+    if (!device) {
+      // The Refresh control is disabled until a device arrives, so this is
+      // only reachable programmatically.
+      return Promise.resolve(false);
+    }
     return app.callTool('get_device', { deviceId: device.id }).then(function (data) {
       device = data.device;
       render();
-      if (options.quiet) say('');
+      return true;
     }).catch(function (error) {
-      say(error.message || 'Could not refresh.', true);
+      if (!keep) say(error.message || 'Could not refresh.', true);
+      return false;
     });
   }
 

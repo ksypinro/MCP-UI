@@ -141,10 +141,18 @@
       say('');
     }).catch(function (error) {
       if (error.code === 'DEVICE_VERSION_CONFLICT') {
-        // Refetch so the user is told what it actually is, not merely that
-        // they were too late.
-        say(device.name + ' changed somewhere else. Refreshing…');
-        return load({ quiet: true });
+        // Refetch first, then explain — using what the refetch found, so the
+        // person is told what the device actually is rather than only that
+        // they were too late. Saying it before the refresh meant the refresh
+        // cleared it again a moment later.
+        return load({ keepMessage: true }).then(function (fresh) {
+          var current = null;
+          for (var i = 0; i < devices.length; i++) {
+            if (devices[i].id === device.id) current = devices[i];
+          }
+          say(device.name + ' was changed somewhere else, so your change was not applied.'
+            + (fresh && current ? ' It is now ' + label(current.state) + '.' : ''), true);
+        });
       }
       if (error.code === 'DEVICE_NOT_FOUND') {
         devices = devices.filter(function (d) { return d.id !== device.id; });
@@ -162,22 +170,31 @@
 
   /* ---------------------------------------------------------------- load */
 
+  /**
+   * Reloads the list. Resolves true when fresh data arrived.
+   *
+   * `keepMessage` means leave the status alone — the caller has something to
+   * say that matters more than anything this function would report.
+   */
   function load(options) {
     options = options || {};
-    if (!options.quiet) say('');
+    var keep = Boolean(options.keepMessage);
+    if (!keep) say('');
+
     return app.callTool('list_devices', {}).then(function (data) {
       devices = data.devices || [];
       loaded = true;
       render();
-      if (options.quiet) say('');
+      return true;
     }).catch(function (error) {
       if (loaded) {
         // Keep showing what we have, labelled as old rather than as current.
-        say('Could not refresh. Showing devices from an earlier update.', true);
+        if (!keep) say('Could not refresh. Showing devices from an earlier update.', true);
       } else {
         $('summary').textContent = 'Could not load your devices.';
-        say(error.message || 'Could not load your devices.', true);
+        if (!keep) say(error.message || 'Could not load your devices.', true);
       }
+      return false;
     });
   }
 
