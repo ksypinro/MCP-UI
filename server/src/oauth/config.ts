@@ -37,5 +37,17 @@ export const PENDING_AUTHORIZATION_TTL_SECONDS = 15 * 60;
 export const OAUTH_ACCESS_TOKEN_TTL_SECONDS = 3600;
 export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600;
 
-/** Dynamic Client Registration is open by definition, so it needs a ceiling. */
+/**
+ * Dynamic Client Registration is open by definition, so it needs a ceiling.
+ *
+ * The ceiling only works alongside eviction. A cap with nothing expiring under
+ * it is not a rate control, it is a permanent lockout waiting to happen: fill
+ * it once and no host can ever connect again.
+ */
 export const MAX_REGISTERED_CLIENTS = 500;
+
+/**
+ * How long a registration that never completed an authorization is kept.
+ * A real client registers and authorizes within minutes.
+ */
+export const UNUSED_CLIENT_TTL_SECONDS = 24 * 3600;

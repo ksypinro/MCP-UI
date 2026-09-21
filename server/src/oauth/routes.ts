@@ -18,7 +18,11 @@ export function oauthRoutes(db: Db): Router {
   // The token endpoint is not: a host calls it from its own infrastructure on
   // behalf of every one of its users, so an address-keyed limit there would
   // throttle everybody at once the moment the integration became popular.
-  const credentialLimiter = rateLimit(20, 60_000);
+  //
+  // Read here rather than at module load so a test harness can raise it for a
+  // whole suite without weakening the default that ships.
+  const perMinute = Number(process.env.AUTH_RATE_LIMIT_PER_MINUTE ?? 20);
+  const credentialLimiter = rateLimit(perMinute, 60_000);
   router.post('/authorize', credentialLimiter);
   router.post('/register', credentialLimiter);
 

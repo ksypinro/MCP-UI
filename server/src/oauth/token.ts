@@ -12,8 +12,7 @@ import type { Db } from '../db/index.ts';
 import { RESOURCE_URI } from './config.ts';
 import { verifyPkce } from './crypto.ts';
 import {
-  consumeAuthorizationCode, createGrant, issueTokens, linkCodeToGrant,
-  readRefreshToken, revokeGrant, rotateRefreshToken
+  consumeAuthorizationCode, establishGrant, readRefreshToken, revokeGrant, rotateRefreshToken
 } from './store.ts';
 
 function fail(res: Response, status: number, error: string, description: string): void {
@@ -79,9 +78,13 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
     return fail(res, 400, 'invalid_target', 'resource does not match the authorization request.');
   }
 
-  const grantId = await createGrant(db, record.accountId, record.clientId, record.resource, record.scope);
-  await linkCodeToGrant(db, code as string, grantId);
-  const tokens = await issueTokens(db, grantId, record.resource, record.scope);
+  const tokens = await establishGrant(db, {
+    code: code as string,
+    accountId: record.accountId,
+    clientId: record.clientId,
+    resource: record.resource,
+    scope: record.scope
+  });
   respond(res, tokens);
 }
 

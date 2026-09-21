@@ -13,8 +13,8 @@ import { createAccount, verifyCredentials } from '../domain/accounts.ts';
 import { ISSUER, RESOURCE_URI, SCOPES, parseScopes } from './config.ts';
 import { redirectUriAllowed, resolveClient } from './clients.ts';
 import {
-  claimPendingAuthorization, createPendingAuthorization, deletePendingAuthorization,
-  issueAuthorizationCode, readPendingAuthorization, type PendingAuthorization
+  claimAndIssueCode, createPendingAuthorization, deletePendingAuthorization,
+  readPendingAuthorization, type PendingAuthorization
 } from './store.ts';
 import { renderAuthorizePage, renderErrorPage } from './pages.ts';
 
@@ -173,16 +173,18 @@ export function authorizeRoutes(db: Db): Router {
       accountId = account.id;
     }
 
-    // Claim before issuing. Issuing first and deleting afterwards leaves a
-    // window where two submissions mint two codes for one authorization.
-    if (!(await claimPendingAuthorization(db, pending.id))) {
+    // Claiming and minting are one transaction: two submissions of the same
+    // authorization must not each end up with a valid code.
+    const code = await claimAndIssueCode(db, accountId, pending);
+    if (!code) {
       res.status(400).type('html').send(renderErrorPage(
         'This sign-in link has already been used',
-        'Start again from the app that sent you here.'
+        mode === 'signup'
+          ? 'Your account was created. Start again from the app that sent you here and log in.'
+          : 'Start again from the app that sent you here.'
       ));
       return;
     }
-    const code = await issueAuthorizationCode(db, accountId, pending);
 
     const location = new URL(pending.redirectUri);
     location.searchParams.set('code', code);

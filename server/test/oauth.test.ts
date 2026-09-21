@@ -440,3 +440,82 @@ test('loopback redirect URIs match with the port ignored', () => {
   assert.ok(!redirectUriAllowed('https://app.example:8443/cb', ['https://app.example/cb']));
   assert.ok(!redirectUriAllowed('http://127.0.0.1:1/cb#fragment', ['http://127.0.0.1:1/cb']));
 });
+
+/* ------------------------------------------------- review regression tests */
+
+test('a code burned by a failed exchange revokes nothing', async () => {
+  // The replay path used to revoke "the most recent grant for this account and
+  // client", which is a guess. A code that failed PKCE never produced a grant,
+  // so guessing would have taken down an unrelated, healthy one.
+  const healthy = await authorizeAs(h.base, { username: 'burn-victim' });
+  const healthyTokens = await exchange(h.base, healthy);
+  assert.equal(healthyTokens.status, 200);
+
+  const doomed = await authorizeAs(h.base, {
+    username: 'burn-victim-2', clientId: healthy.clientId
+  });
+  const failed = await exchange(h.base, doomed, { code_verifier: pkcePair().verifier });
+  assert.equal(failed.status, 400);
+
+  const replay = await exchange(h.base, doomed);
+  assert.equal(replay.status, 400);
+
+  assert.ok(
+    (await verifyOAuthAccessToken(h.db, healthyTokens.body.access_token)).ok,
+    'an unrelated grant must survive'
+  );
+});
+
+test('registration evicts abandoned clients instead of locking out forever', async () => {
+  const { evictUnusedClients } = await import('../src/oauth/clients.ts');
+
+  // A registration that never completed an authorization, made yesterday.
+  await h.db.query(
+    `INSERT INTO oauth_clients (client_id, client_name, redirect_uris, source, created_at)
+     VALUES ('client_abandoned', 'Abandoned', $1, 'dcr', now() - interval '2 days')`,
+    [JSON.stringify([REDIRECT_URI])]
+  );
+  // And one that did authorize, of the same age.
+  const used = await authorizeAs(h.base);
+  await exchange(h.base, used);
+  await h.db.query(
+    `UPDATE oauth_clients SET created_at = now() - interval '2 days' WHERE client_id = $1`,
+    [used.clientId]
+  );
+
+  const evicted = await evictUnusedClients(h.db);
+  assert.ok(evicted >= 1, 'the abandoned registration is evicted');
+
+  const remaining = await h.db.query<{ client_id: string }>(
+    'SELECT client_id FROM oauth_clients WHERE client_id = $1', [used.clientId]
+  );
+  assert.equal(remaining.rows.length, 1, 'a client with a grant is never evicted');
+
+  const gone = await h.db.query<{ client_id: string }>(
+    `SELECT client_id FROM oauth_clients WHERE client_id = 'client_abandoned'`
+  );
+  assert.equal(gone.rows.length, 0);
+});
+
+test('two submissions of one authorization yield at most one code', async () => {
+  const clientId = await sharedClient(h.base);
+  const { challenge } = pkcePair();
+  const page = await fetch(authorizeUrl(h.base, {
+    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
+    code_challenge: challenge, code_challenge_method: 'S256'
+  })).then((r) => r.text());
+  const pending = pendingIdFrom(page)!;
+
+  const username = `race${Date.now()}`;
+  const submit = () => fetch(`${h.base}/authorize`, form({
+    pending, mode: 'signup', username, password: 'correct horse battery staple'
+  }));
+
+  const [a, b] = await Promise.all([submit(), submit()]);
+  const codes = [a, b]
+    .map((r) => r.headers.get('location'))
+    .filter((location): location is string => typeof location === 'string')
+    .filter((location) => new URL(location).searchParams.has('code'));
+
+  assert.equal(codes.length, 1, 'claiming and minting are one transaction');
+});

@@ -11,6 +11,10 @@ export interface Harness {
 }
 
 export async function startServer(): Promise<Harness> {
+  // A suite makes far more authorization attempts in a minute than a person
+  // ever would, and the shipped limit is set for the person. Raising it here
+  // keeps the production default honest instead of loosening it for everyone.
+  process.env.AUTH_RATE_LIMIT_PER_MINUTE = '100000';
   const db = await createDb();
   const server: Server = createApp(db).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));

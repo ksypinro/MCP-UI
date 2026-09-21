@@ -66,26 +66,29 @@ export async function deletePendingAuthorization(db: Queryable, id: string): Pro
   await db.query('DELETE FROM oauth_pending_authorizations WHERE id = $1', [id]);
 }
 
-/**
- * Takes exclusive ownership of a pending authorization, or returns false if
- * someone else already has it.
- *
- * Reading it, issuing a code and then deleting it leaves a window in which two
- * concurrent submissions both read the same row and both mint a valid code for
- * one authorization request. Deleting first closes it: exactly one caller sees
- * a deleted row.
- */
-export async function claimPendingAuthorization(db: Queryable, id: string): Promise<boolean> {
-  const { rows } = await db.query<{ id: string }>(
-    'DELETE FROM oauth_pending_authorizations WHERE id = $1 RETURNING id',
-    [id]
-  );
-  return rows.length === 1;
-}
-
 /* ------------------------------------------------------------------ codes */
 
-export async function issueAuthorizationCode(
+/**
+ * Claims the pending authorization and mints its code in one transaction.
+ *
+ * Returns null when someone else already claimed it. Doing these as two
+ * statements leaves a window where two submissions of the same authorization
+ * each mint a valid code.
+ */
+export async function claimAndIssueCode(
+  db: Db, accountId: string, pending: PendingAuthorization
+): Promise<string | null> {
+  return db.transaction(async (tx) => {
+    const claimed = await tx.query<{ id: string }>(
+      'DELETE FROM oauth_pending_authorizations WHERE id = $1 RETURNING id',
+      [pending.id]
+    );
+    if (claimed.rows.length !== 1) return null;
+    return issueAuthorizationCode(tx, accountId, pending);
+  });
+}
+
+async function issueAuthorizationCode(
   db: Queryable, accountId: string, pending: PendingAuthorization
 ): Promise<string> {
   const code = newSecret();
@@ -152,14 +155,6 @@ export async function consumeAuthorizationCode(
   };
 }
 
-/** Records which grant a code produced, so a later replay can revoke it. */
-export async function linkCodeToGrant(db: Queryable, code: string, grantId: string): Promise<void> {
-  await db.query(
-    'UPDATE oauth_authorization_codes SET grant_id = $1 WHERE code_hash = $2',
-    [grantId, fingerprint(code)]
-  );
-}
-
 /* ----------------------------------------------------------------- grants */
 
 export interface IssuedTokens {
@@ -167,18 +162,6 @@ export interface IssuedTokens {
   refreshToken: string;
   expiresIn: number;
   scope: string;
-}
-
-export async function createGrant(
-  db: Queryable, accountId: string, clientId: string, resource: string, scope: string
-): Promise<string> {
-  const id = newId('grant');
-  await db.query(
-    `INSERT INTO oauth_grants (id, account_id, client_id, resource, scope)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [id, accountId, clientId, resource, scope]
-  );
-  return id;
 }
 
 export async function issueTokens(
@@ -258,15 +241,49 @@ export async function readRefreshToken(
   };
 }
 
+/**
+ * One transaction, because a rotation that issues without retiring leaves the
+ * old refresh token valid *and* unmarked — so a later replay of it is not
+ * recognised as reuse, losing the only signal that it leaked.
+ */
 export async function rotateRefreshToken(
-  db: Queryable, previousHash: string, grantId: string, audience: string, scope: string
+  db: Db, previousHash: string, grantId: string, audience: string, scope: string
 ): Promise<IssuedTokens> {
-  const issued = await issueTokens(db, grantId, audience, scope);
-  await db.query(
-    'UPDATE oauth_refresh_tokens SET replaced_by = $1 WHERE token_hash = $2',
-    [fingerprint(issued.refreshToken), previousHash]
-  );
-  return issued;
+  return db.transaction(async (tx) => {
+    const issued = await issueTokens(tx, grantId, audience, scope);
+    await tx.query(
+      'UPDATE oauth_refresh_tokens SET replaced_by = $1 WHERE token_hash = $2',
+      [fingerprint(issued.refreshToken), previousHash]
+    );
+    return issued;
+  });
+}
+
+/**
+ * Creates the grant, records it against the code, and issues the first token
+ * pair — all or nothing.
+ *
+ * Split across statements, a failure part way leaves either a grant with no
+ * tokens, or a grant whose code carries no grant_id, which silently disarms
+ * the replay protection for that code.
+ */
+export async function establishGrant(
+  db: Db,
+  options: { code: string; accountId: string; clientId: string; resource: string; scope: string }
+): Promise<IssuedTokens> {
+  return db.transaction(async (tx) => {
+    const grantId = newId('grant');
+    await tx.query(
+      `INSERT INTO oauth_grants (id, account_id, client_id, resource, scope)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [grantId, options.accountId, options.clientId, options.resource, options.scope]
+    );
+    await tx.query(
+      'UPDATE oauth_authorization_codes SET grant_id = $1 WHERE code_hash = $2',
+      [grantId, fingerprint(options.code)]
+    );
+    return issueTokens(tx, grantId, options.resource, options.scope);
+  });
 }
 
 export async function revokeByRefreshToken(db: Db, token: string): Promise<void> {

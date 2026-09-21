@@ -8,10 +8,11 @@
  */
 
 import { lookup } from 'node:dns/promises';
+import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import type { Db, Queryable } from '../db/index.ts';
-import { MAX_REGISTERED_CLIENTS } from './config.ts';
+import { MAX_REGISTERED_CLIENTS, UNUSED_CLIENT_TTL_SECONDS } from './config.ts';
 
 export interface ResolvedClient {
   clientId: string;
@@ -63,16 +64,92 @@ function isPrivateAddress(address: string): boolean {
   return false;
 }
 
-async function resolvesToPublicAddress(hostname: string): Promise<boolean> {
-  if (isIP(hostname)) return !isPrivateAddress(hostname);
+/**
+ * Resolves a hostname and returns the address to connect to, or null if any of
+ * them is private.
+ *
+ * The address is returned rather than a boolean because the caller pins the
+ * connection to it. Checking a hostname and then letting the HTTP client
+ * resolve it again is open to DNS rebinding: an attacker serving a short TTL
+ * answers the check with a public address and the connection with an internal
+ * one.
+ */
+async function resolvePinnedAddress(
+  hostname: string
+): Promise<{ address: string; family: number } | null> {
+  if (isIP(hostname)) {
+    return isPrivateAddress(hostname)
+      ? null
+      : { address: hostname, family: isIP(hostname) };
+  }
   try {
     const addresses = await lookup(hostname, { all: true });
-    // Every address must be public: a name that resolves to both is still a
-    // way to reach the private one.
-    return addresses.length > 0 && addresses.every((entry) => !isPrivateAddress(entry.address));
+    if (addresses.length === 0) return null;
+    // Every address must be public: a name resolving to both is still a way
+    // to reach the private one.
+    if (addresses.some((entry) => isPrivateAddress(entry.address))) return null;
+    const chosen = addresses[0];
+    return chosen ? { address: chosen.address, family: chosen.family } : null;
   } catch {
-    return false;
+    return null;
   }
+}
+
+/**
+ * GET over HTTPS with the connection pinned to `pinned`, while TLS still
+ * validates against the real hostname via SNI.
+ */
+function fetchPinned(
+  url: URL, pinned: { address: string; family: number }
+): Promise<{ status: number; body: string } | null> {
+  return new Promise((resolve) => {
+    const req = httpsRequest(
+      {
+        protocol: url.protocol,
+        hostname: url.hostname,
+        port: url.port || 443,
+        path: `${url.pathname}${url.search}`,
+        method: 'GET',
+        headers: { accept: 'application/json', host: url.host },
+        servername: url.hostname,
+        timeout: CIMD_TIMEOUT_MS,
+        // The whole point: connect to the address that was checked, not to
+        // whatever DNS says a second time.
+        lookup: (_hostname, _options, callback) => {
+          (callback as (err: Error | null, address: string, family: number) => void)(
+            null, pinned.address, pinned.family
+          );
+        }
+      },
+      (response) => {
+        // A redirect could land on a host we never checked. Refuse rather
+        // than re-run the whole validation on a moving target.
+        const status = response.statusCode ?? 0;
+        if (status >= 300 && status < 400) {
+          response.destroy();
+          resolve(null);
+          return;
+        }
+        let body = '';
+        let size = 0;
+        response.setEncoding('utf8');
+        response.on('data', (chunk: string) => {
+          size += chunk.length;
+          if (size > CIMD_MAX_BYTES) {
+            response.destroy();
+            resolve(null);
+            return;
+          }
+          body += chunk;
+        });
+        response.on('end', () => resolve({ status, body }));
+        response.on('error', () => resolve(null));
+      }
+    );
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve(null));
+    req.end();
+  });
 }
 
 /* ------------------------------------------------------------------ CIMD */
@@ -91,24 +168,15 @@ async function resolveMetadataDocument(clientId: string): Promise<ResolvedClient
     return null;
   }
   if (url.protocol !== 'https:') return null;
-  if (!(await resolvesToPublicAddress(url.hostname))) return null;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), CIMD_TIMEOUT_MS);
+  const pinned = await resolvePinnedAddress(url.hostname);
+  if (!pinned) return null;
+
   try {
-    const response = await fetch(clientId, {
-      headers: { accept: 'application/json' },
-      signal: controller.signal,
-      // A redirect could land on a host we never checked. Refuse rather than
-      // re-run the whole validation on a moving target.
-      redirect: 'error'
-    });
-    if (!response.ok) return null;
+    const response = await fetchPinned(url, pinned);
+    if (!response || response.status < 200 || response.status >= 300) return null;
 
-    const body = await response.text();
-    if (body.length > CIMD_MAX_BYTES) return null;
-
-    const document = JSON.parse(body) as ClientIdMetadataDocument;
+    const document = JSON.parse(response.body) as ClientIdMetadataDocument;
 
     // The document must be self-referential, or anyone could host a document
     // claiming to be someone else's client_id.
@@ -122,8 +190,6 @@ async function resolveMetadataDocument(clientId: string): Promise<ResolvedClient
     return { clientId, redirectUris, displayHost: url.host };
   } catch {
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -136,6 +202,11 @@ export async function registerClient(
 ): Promise<{ clientId: string } | { error: string }> {
   const valid = redirectUris.filter(isRegisterableRedirectUri);
   if (valid.length === 0) return { error: 'invalid_redirect_uri' };
+
+  // Evict before counting. A client that registered and never authorized is
+  // either an abandoned experiment or noise; a real one has a grant within
+  // minutes. Without this the cap below can only ever be reached once.
+  await evictUnusedClients(db);
 
   const { rows } = await db.query<{ n: number }>('SELECT count(*)::int AS n FROM oauth_clients');
   if ((rows[0]?.n ?? 0) >= MAX_REGISTERED_CLIENTS) return { error: 'registration_closed' };
@@ -177,6 +248,17 @@ export function isRegisterableRedirectUri(uri: string): boolean {
   if (parsed.protocol === 'http:') return isLoopback(parsed);
   // A private-use scheme must be reverse-DNS, per RFC 8252 section 7.1.
   return /^[a-z][a-z0-9+.-]*\.[a-z0-9+.-]+:$/i.test(parsed.protocol);
+}
+
+export async function evictUnusedClients(db: Queryable): Promise<number> {
+  const { affectedRows } = await db.query(
+    `DELETE FROM oauth_clients
+      WHERE source = 'dcr'
+        AND created_at < now() - make_interval(secs => $1)
+        AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_id = oauth_clients.client_id)`,
+    [UNUSED_CLIENT_TTL_SECONDS]
+  );
+  return affectedRows;
 }
 
 async function resolveRegisteredClient(db: Queryable, clientId: string): Promise<ResolvedClient | null> {
