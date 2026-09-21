@@ -4,6 +4,7 @@ import type { Db } from '../db/index.ts';
 import { errorHandler, notFound, withRequestId } from './middleware.ts';
 import { authRoutes } from './routes-auth.ts';
 import { deviceRoutes } from './routes-devices.ts';
+import { oauthRoutes } from '../oauth/routes.ts';
 
 export function createApp(db: Db): Express {
   const app = express();
@@ -15,8 +16,18 @@ export function createApp(db: Db): Express {
 
   app.use(withRequestId());
   app.use(express.json({ limit: '64kb' }));
+  // The hosted authorization page posts a form, and the OAuth token,
+  // registration and revocation endpoints are specified as
+  // application/x-www-form-urlencoded. Without this their bodies arrive
+  // unparsed and every one of them fails as a malformed request.
+  app.use(express.urlencoded({ extended: false, limit: '64kb' }));
 
   app.get('/healthz', (_req, res) => res.json({ ok: true }));
+
+  // The authorization server. Mounted at the root because its discovery
+  // documents live at well-known paths that cannot be moved.
+  app.use(oauthRoutes(db));
+
   app.use(authRoutes(db));
   app.use(deviceRoutes(db));
 
