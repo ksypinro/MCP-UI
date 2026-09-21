@@ -115,6 +115,51 @@ never the document's `client_name`: the document is self-asserted, so the name
 is whatever the client felt like claiming, while the host is what it had to
 control in order to serve it.
 
+## The MCP App views
+
+`src/mcp/ui/` holds the four views from spec section 9. Each page is assembled
+at startup from a shared stylesheet, a shared host bridge and one view script,
+all inlined — which is what lets `_meta.ui.csp` stay empty. A host blocks every
+external origin by default; a page that needs none cannot be broken by that
+policy and cannot widen it.
+
+**One bridge, shared.** `assets/bridge.js` is the only implementation of the
+handshake, the tool-call proxy and the sizing protocol. Two copies of a
+protocol do not stay identical, and the list and detail views run the same one.
+
+**Nothing in a view ever holds a token.** Protected data arrives only as the
+result of a tool call the host chose to forward. There is a test asserting the
+views never mention a credential header or reach for browser storage.
+
+**Device names are written with `textContent`, never as markup.** They are the
+one user-supplied string that reaches these templates, and the templates are
+otherwise entirely static.
+
+### The inline row budget is a guess
+
+`devices.js` renders `INLINE_ROW_BUDGET` rows inline and offers fullscreen for
+the rest, because on a phone the conversation owns vertical scrolling: a pan
+starting inside an inline card scrolls the chat, and the host clips whatever
+overflows. A long list rendered inline is partly unreachable, not merely ugly.
+
+The number is currently **4**, which is Claude's published guidance for an
+inline card and not an observation. Question 2 in `../spike/FINDINGS.md` exists
+to replace it with a measurement. When that is answered, change the constant.
+
+### Looking at the views
+
+```bash
+npm start                       # server on :4000
+node tools/mock-host/run.mjs    # harness on :8099, prints a URL
+```
+
+The harness is a mock MCP Apps host: it implements the bridge protocol, proxies
+tool calls to the running server, and renders any of the four views in an
+iframe with a live message log. It is not a test and is not shipped. It exists
+because the views cannot otherwise be looked at, and it earned its place
+immediately — it found a handler-registry collision in the bridge that every
+unit test passed straight over.
+
 ## On PGlite
 
 The store is [PGlite](https://pglite.dev): real PostgreSQL compiled to

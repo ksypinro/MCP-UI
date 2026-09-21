@@ -34,7 +34,10 @@ test('tool discovery works without a token and exposes no private data', async (
   assert.equal(response.status, 200);
 
   const names = response.body.result.tools.map((tool: { name: string }) => tool.name).sort();
-  assert.deepEqual(names, ['add_device', 'control_device', 'get_auth_status', 'get_device', 'list_devices']);
+  assert.deepEqual(names, [
+    'add_device', 'control_device', 'get_auth_status', 'get_device',
+    'list_devices', 'show_add_device', 'show_auth'
+  ]);
 
   // Discovery is public, so nothing in it may depend on who is asking.
   assert.doesNotMatch(JSON.stringify(response.body), /dev_|acc_|Bedroom/);

@@ -15,6 +15,7 @@ import { context, rateLimit } from '../http/middleware.ts';
 import { MCP_PATH, SERVER_INFO } from './config.ts';
 import { bearerFrom, gate } from './gate.ts';
 import { registerDeviceTools } from './tools.ts';
+import { registerUi } from './resources.ts';
 import type { Identity } from '../domain/types.ts';
 
 function buildServer(db: Db, identity: Identity | null): McpServer {
@@ -22,6 +23,7 @@ function buildServer(db: Db, identity: Identity | null): McpServer {
     capabilities: { tools: {}, resources: {} }
   });
   registerDeviceTools(server, db, identity);
+  registerUi(server);
   return server;
 }
 
