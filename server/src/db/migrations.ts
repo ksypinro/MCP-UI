@@ -108,5 +108,104 @@ export const MIGRATIONS: Migration[] = [
       -- created. The fingerprint lets a mismatched replay be refused.
       ALTER TABLE idempotency_keys ADD COLUMN request_fingerprint text;
     `
+  },
+  {
+    name: '003_oauth',
+    sql: `
+      -- Clients that reached us through Dynamic Client Registration, or that
+      -- were pre-registered by hand. Clients identified by a Client ID
+      -- Metadata Document are NOT stored: their metadata is fetched from the
+      -- client_id URL at authorization time, which is the point of CIMD.
+      CREATE TABLE oauth_clients (
+        client_id     text PRIMARY KEY,
+        client_name   text,
+        redirect_uris text NOT NULL,          -- JSON array
+        source        text NOT NULL CHECK (source IN ('dcr', 'preregistered')),
+        created_at    timestamptz NOT NULL DEFAULT now()
+      );
+
+      -- An authorization in flight, held server-side and addressed by an
+      -- opaque id. The browser never carries this record.
+      --
+      -- An earlier revision of the spike round-tripped it through the login
+      -- form as unsigned base64, which let anyone craft a context naming their
+      -- own redirect_uri and PKCE challenge, walk a victim through a genuine
+      -- login page showing a spoofed client name, and collect a live
+      -- authorization code. Client and redirect_uri are validated once, here,
+      -- before this row exists.
+      CREATE TABLE oauth_pending_authorizations (
+        id             text PRIMARY KEY,
+        client_id      text NOT NULL,
+        client_host    text NOT NULL,         -- what the consent screen shows
+        redirect_uri   text NOT NULL,
+        state          text,
+        code_challenge text NOT NULL,
+        resource       text NOT NULL,
+        scope          text NOT NULL,         -- space delimited
+        created_at     timestamptz NOT NULL DEFAULT now(),
+        expires_at     timestamptz NOT NULL
+      );
+
+      -- Codes are stored hashed and are single use.
+      CREATE TABLE oauth_authorization_codes (
+        code_hash      text PRIMARY KEY,
+        account_id     text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        client_id      text NOT NULL,
+        redirect_uri   text NOT NULL,
+        code_challenge text NOT NULL,
+        resource       text NOT NULL,
+        scope          text NOT NULL,
+        consumed_at    timestamptz,
+        -- The grant this code produced, if it ever produced one. A replay
+        -- revokes exactly this and nothing else: guessing from account and
+        -- client would revoke an unrelated newer grant, and a code that was
+        -- burned by a failed exchange produced no grant at all.
+        grant_id       text,
+        created_at     timestamptz NOT NULL DEFAULT now(),
+        expires_at     timestamptz NOT NULL
+      );
+
+      -- One grant per completed authorization. Access and refresh tokens hang
+      -- off it, so revoking the grant takes every token it ever issued.
+      CREATE TABLE oauth_grants (
+        id         text PRIMARY KEY,
+        account_id text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        client_id  text NOT NULL,
+        resource   text NOT NULL,
+        scope      text NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        revoked_at timestamptz
+      );
+
+      CREATE INDEX oauth_grants_account_idx ON oauth_grants (account_id);
+
+      -- Audience is stored per token and checked on every use: a token minted
+      -- for another resource must never be accepted here, however valid it is
+      -- elsewhere (RFC 8707).
+      CREATE TABLE oauth_access_tokens (
+        token_hash text PRIMARY KEY,
+        grant_id   text NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE,
+        audience   text NOT NULL,
+        scope      text NOT NULL,
+        expires_at timestamptz NOT NULL
+      );
+
+      CREATE INDEX oauth_access_tokens_grant_idx ON oauth_access_tokens (grant_id);
+
+      -- Rotated on every use. Presenting one that was already exchanged means
+      -- it leaked, and the whole grant goes.
+      CREATE TABLE oauth_refresh_tokens (
+        token_hash  text PRIMARY KEY,
+        grant_id    text NOT NULL REFERENCES oauth_grants(id) ON DELETE CASCADE,
+        audience    text NOT NULL,
+        scope       text NOT NULL,
+        replaced_by text,
+        revoked_at  timestamptz,
+        created_at  timestamptz NOT NULL DEFAULT now(),
+        expires_at  timestamptz NOT NULL
+      );
+
+      CREATE INDEX oauth_refresh_tokens_grant_idx ON oauth_refresh_tokens (grant_id);
+    `
   }
 ];

@@ -74,6 +74,47 @@ Expired sessions and access tokens are swept hourly. Both are joined on every
 protected request, so leaving them to accumulate degrades latency with uptime
 rather than with load.
 
+## The authorization server
+
+`src/oauth/` is a complete OAuth 2.1 authorization server, built to the MCP
+authorization specification revision `2026-07-28`. It is what lets an external
+host — Claude, ChatGPT — connect to the MCP server that phase 4 will add,
+without a credential ever passing through a tool, a model, or a conversation.
+
+The flow is ordinary authorization-code with PKCE. What is worth knowing:
+
+- **Discovery is a chain.** A `401` names the protected resource metadata, that
+  names the authorization server, that names the endpoints. Protected resource
+  metadata is served at both `/.well-known/oauth-protected-resource` and the
+  `/mcp`-suffixed variant, because clients try the suffixed form first when the
+  resource has a path and a server answering only one is discovered by some
+  hosts and not others.
+- **`client_id_metadata_document_supported` and `token_endpoint_auth_methods_supported: ["none"]`**
+  are both advertised. Claude picks CIMD only when both are present.
+- **Tokens are audience bound** (RFC 8707). A token minted for another resource
+  is refused here however valid it is there.
+- **Everything that can leak is treated as leaked.** A replayed authorization
+  code revokes exactly the grant it produced; a replayed refresh token revokes
+  the whole grant, including the token the thief did not steal.
+
+### What the hosted page is for
+
+`/authorize` renders the only place a password is ever typed. It is
+server-rendered, entirely outside MCP, and returns nothing to the client but an
+authorization code on a registered redirect URI. Spec section 7.4.
+
+### Fetching a client_id is a request you did not choose to make
+
+A Client ID Metadata Document is a URL supplied by whoever starts an
+authorization, and resolving it means fetching it. `clients.ts` requires HTTPS,
+resolves the hostname first and refuses any address that is loopback, private,
+link-local or carrier-grade NAT — `169.254.169.254` being the usual target —
+refuses redirects, caps the body, and requires the document to be
+self-referential. The consent screen shows the **host of the `client_id` URL**,
+never the document's `client_name`: the document is self-asserted, so the name
+is whatever the client felt like claiming, while the host is what it had to
+control in order to serve it.
+
 ## On PGlite
 
 The store is [PGlite](https://pglite.dev): real PostgreSQL compiled to
