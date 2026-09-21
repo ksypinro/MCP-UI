@@ -5,6 +5,7 @@ import { errorHandler, notFound, withRequestId } from './middleware.ts';
 import { authRoutes } from './routes-auth.ts';
 import { deviceRoutes } from './routes-devices.ts';
 import { oauthRoutes } from '../oauth/routes.ts';
+import { mcpRoutes } from '../mcp/routes.ts';
 
 export function createApp(db: Db): Express {
   const app = express();
@@ -27,6 +28,11 @@ export function createApp(db: Db): Express {
   // The authorization server. Mounted at the root because its discovery
   // documents live at well-known paths that cannot be moved.
   app.use(oauthRoutes(db));
+
+  // The MCP endpoint. Its own authorization gate runs inside, on the parsed
+  // body, because a refusal there has to be an HTTP status rather than a tool
+  // result.
+  app.use(mcpRoutes(db));
 
   app.use(authRoutes(db));
   app.use(deviceRoutes(db));
