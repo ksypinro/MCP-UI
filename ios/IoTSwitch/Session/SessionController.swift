@@ -44,8 +44,10 @@ final class SessionController: ObservableObject {
     func logOut() async {
         // Tell the backend if we can, but a failure here must not strand the
         // user in a signed-in shell they cannot use.
-        if let token = session?.accessToken {
-            try? await api.logOut(accessToken: token)
+        if session != nil {
+            try? await authorized { token in
+                try await api.logOut(accessToken: token)
+            }
         }
         clearSession()
     }

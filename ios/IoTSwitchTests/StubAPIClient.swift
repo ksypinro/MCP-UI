@@ -26,6 +26,9 @@ final class StubAPIClient: APIClient, @unchecked Sendable {
     var controlResults: [Result<Device, Error>] = []
     var addResults: [Result<Device, Error>] = []
     var logOutError: Error?
+    var expiredLogoutToken: String?
+    private(set) var logoutTokens: [String] = []
+    var readGate: (@Sendable () async -> Void)?
 
     /// Blocks every call until released. Used to observe in-flight behaviour.
     var gate: (@Sendable () async -> Void)?
@@ -68,16 +71,18 @@ final class StubAPIClient: APIClient, @unchecked Sendable {
 
     func logOut(accessToken: String) async throws {
         record(.logOut)
+        lock.withLock { logoutTokens.append(accessToken) }
+        if accessToken == expiredLogoutToken { throw APIError.unauthenticated }
         if let logOutError { throw logOutError }
     }
 
     func listDevices(accessToken: String) async throws -> [Device] {
-        record(.list); await gate?()
+        record(.list); await readGate?(); await gate?()
         return try next(&listResults, "listDevices")
     }
 
     func getDevice(id: String, accessToken: String) async throws -> Device {
-        record(.get(id)); await gate?()
+        record(.get(id)); await readGate?(); await gate?()
         return try next(&getResults, "getDevice")
     }
 
@@ -143,6 +148,7 @@ func makeSignedInSession(_ api: StubAPIClient) -> SessionController {
 /// observed rather than inferred from timing.
 actor AsyncGate {
     private var isOpen = false
+    func hasWaiter() -> Bool { !waiters.isEmpty }
     private var waiters: [CheckedContinuation<Void, Never>] = []
 
     func wait() async {

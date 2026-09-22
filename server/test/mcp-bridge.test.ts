@@ -188,6 +188,9 @@ test('the handshake reports the display modes the view supports', async () => {
 
   const started = app.start({ displayModes: ['inline', 'fullscreen'] });
   const request = sent.find((m) => m.method === 'ui/initialize');
+  assert.equal(request.params.appInfo.name, 'IoT Switch');
+  assert.equal(request.params.appInfo.version, '0.1.0');
+  assert.equal(request.params.protocolVersion, '2026-01-26');
   assert.deepEqual(request.params.appCapabilities.availableDisplayModes, ['inline', 'fullscreen']);
 
   deliver({
