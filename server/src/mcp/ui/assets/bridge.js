@@ -167,6 +167,8 @@
     start: function (options) {
       options = options || {};
       return request('ui/initialize', {
+        appInfo: { name: 'IoT Switch', version: '0.1.0' },
+        protocolVersion: '2026-01-26',
         appCapabilities: {
           availableDisplayModes: options.displayModes || ['inline']
         }

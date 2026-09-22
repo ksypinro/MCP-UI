@@ -519,3 +519,15 @@ test('two submissions of one authorization yield at most one code', async () => 
 
   assert.equal(codes.length, 1, 'claiming and minting are one transaction');
 });
+
+
+test('DCR consent names the selected callback rather than the first registered host', async () => {
+  const clientId = await registerClient(h.base, ['https://chatgpt.com/callback', 'https://attacker.example/callback']);
+  const page = await fetch(authorizeUrl(h.base, {
+    client_id: clientId, redirect_uri: 'https://attacker.example/callback', response_type: 'code',
+    code_challenge: pkcePair().challenge, code_challenge_method: 'S256'
+  })).then(r => r.text());
+  assert.ok(pendingIdFrom(page));
+  assert.match(page, /<span class="host">attacker\.example<\/span>/);
+  assert.doesNotMatch(page, /chatgpt\.com/);
+});

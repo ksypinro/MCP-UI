@@ -9,7 +9,7 @@
 
 import { lookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
-import { isIP } from 'node:net';
+import { isIP, type LookupFunction } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import type { Db, Queryable } from '../db/index.ts';
 import { MAX_REGISTERED_CLIENTS, UNUSED_CLIENT_TTL_SECONDS } from './config.ts';
@@ -23,9 +23,10 @@ export interface ResolvedClient {
    * For CIMD this is the host of the client_id URL, never the document's
    * `client_name`: the document is self-asserted, so its name is whatever the
    * client felt like claiming, while the host is what the client had to
-   * control in order to serve it.
+   * control in order to serve it. Null for DCR: consent must instead name
+   * the validated callback selected by this authorization request.
    */
-  displayHost: string;
+  displayHost: string | null;
 }
 
 const CIMD_TIMEOUT_MS = 5_000;
@@ -95,6 +96,14 @@ async function resolvePinnedAddress(
   }
 }
 
+/** A pinned DNS answer in either callback shape requested by Node. */
+export function pinnedLookup(pinned: { address: string; family: number }): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all) callback(null, [pinned]);
+    else callback(null, pinned.address, pinned.family);
+  };
+}
+
 /**
  * GET over HTTPS with the connection pinned to `pinned`, while TLS still
  * validates against the real hostname via SNI.
@@ -115,11 +124,7 @@ function fetchPinned(
         timeout: CIMD_TIMEOUT_MS,
         // The whole point: connect to the address that was checked, not to
         // whatever DNS says a second time.
-        lookup: (_hostname, _options, callback) => {
-          (callback as (err: Error | null, address: string, family: number) => void)(
-            null, pinned.address, pinned.family
-          );
-        }
+        lookup: pinnedLookup(pinned)
       },
       (response) => {
         // A redirect could land on a host we never checked. Refuse rather
@@ -270,14 +275,10 @@ async function resolveRegisteredClient(db: Queryable, clientId: string): Promise
   if (!row) return null;
 
   const redirectUris = JSON.parse(row.redirect_uris) as string[];
-  // A registered client's identity is the opaque id it was issued. There is no
-  // verified name to show, so the consent screen shows the redirect host.
-  let displayHost = clientId;
-  try {
-    displayHost = new URL(redirectUris[0] ?? '').host || clientId;
-  } catch { /* keep the id */ }
-
-  return { clientId, redirectUris, displayHost };
+  // DCR does not establish ownership of a name or of the first registered
+  // URI. The authorization endpoint must display the validated destination
+  // actually selected for this request.
+  return { clientId, redirectUris, displayHost: null };
 }
 
 /** CIMD when the id is an HTTPS URL, otherwise a registered client. */

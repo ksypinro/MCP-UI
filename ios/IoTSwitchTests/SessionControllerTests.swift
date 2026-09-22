@@ -18,6 +18,19 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertEqual(session.account?.username, "sam")
     }
 
+    func testLogoutRefreshesAnExpiredTokenBeforeRevoking() async {
+        let api = StubAPIClient()
+        api.expiredLogoutToken = "access-1"
+        api.refreshResults = [.success(.fixture())]
+        let storage = InMemoryTokenStorage(StoredSession(accessToken: "access-1", refreshToken: "refresh-1", account: .fixture()))
+        let session = SessionController(api: api, storage: storage)
+        await session.logOut()
+        XCTAssertEqual(api.logoutTokens, ["access-1", "access-2"])
+        XCTAssertEqual(api.callCount { if case .refresh = $0 { return true }; return false }, 1)
+        XCTAssertFalse(session.isSignedIn)
+        XCTAssertNil(storage.load())
+    }
+
     func testAStoredSessionIsRestoredOnLaunch() {
         let api = StubAPIClient()
         let session = makeSignedInSession(api)

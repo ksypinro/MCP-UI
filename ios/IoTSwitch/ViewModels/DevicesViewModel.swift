@@ -29,6 +29,8 @@ final class DevicesViewModel: ObservableObject {
     @Published var notice: Notice?
     @Published private(set) var recentlyAddedDeviceID: String?
 
+    private var loadSequence = 0
+
     private let control: DeviceControlService
     private let session: SessionController
 
@@ -63,24 +65,38 @@ final class DevicesViewModel: ObservableObject {
     func refresh() async { await load(initial: false) }
 
     private func load(initial: Bool) async {
+        loadSequence += 1
+        let sequence = loadSequence
+        let startingIDs = Set(devices.map(\.id))
         if initial {
             phase = .loading
         } else {
             // Section 5.3: the visible list stays put while refreshing.
             isRefreshing = true
         }
-        defer { isRefreshing = false }
+        defer { if sequence == loadSequence { isRefreshing = false } }
 
         do {
-            devices = try await control.list()
+            let fetched = try await control.list()
+            guard sequence == loadSequence else { return }
+            let current = Dictionary(uniqueKeysWithValues: devices.map { ($0.id, $0) })
+            let fetchedIDs = Set(fetched.map(\.id))
+            // Keep newer confirmations and additions made while this read ran.
+            devices = fetched.map { incoming in
+                guard let known = current[incoming.id], known.version > incoming.version else { return incoming }
+                return known
+            } + devices.filter { !startingIDs.contains($0.id) && !fetchedIDs.contains($0.id) }
+            devices.sort { $0.createdAt == $1.createdAt ? $0.id < $1.id : $0.createdAt < $1.createdAt }
             phase = .loaded
             isShowingStaleData = false
         } catch APIError.unauthenticated {
+            guard sequence == loadSequence else { return }
             // The root view is already switching to sign-in; showing an error
             // here would flash a message at a screen that is going away.
             devices = []
             phase = .loading
         } catch let error as APIError {
+            guard sequence == loadSequence else { return }
             if devices.isEmpty {
                 phase = .failed(error.userMessage)
             } else {
@@ -90,6 +106,7 @@ final class DevicesViewModel: ObservableObject {
                 notice = Notice(title: "Could not refresh", message: error.userMessage)
             }
         } catch {
+            guard sequence == loadSequence else { return }
             phase = .failed(error.localizedDescription)
         }
     }
@@ -168,6 +185,7 @@ final class DevicesViewModel: ObservableObject {
 
     private func replace(_ device: Device, insertingIfMissing: Bool = false) {
         if let index = devices.firstIndex(where: { $0.id == device.id }) {
+            guard device.version >= devices[index].version else { return }
             devices[index] = device
         } else if insertingIfMissing {
             devices.append(device)

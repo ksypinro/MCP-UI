@@ -5,6 +5,23 @@ import XCTest
 @MainActor
 final class DevicesViewModelTests: XCTestCase {
 
+    func testDelayedReadCannotOverwriteConfirmedControl() async {
+        let api = StubAPIClient()
+        api.controlResults = [.success(.fixture(state: .on, version: 2))]
+        api.listResults = [.success([.fixture()]), .success([.fixture()])]
+        let (viewModel, _) = makeViewModel(api)
+        await viewModel.loadIfNeeded()
+        let gate = AsyncGate()
+        api.readGate = { await gate.wait() }
+        let read = Task { await viewModel.refresh() }
+        while !(await gate.hasWaiter()) { await Task.yield() }
+        await viewModel.setState(viewModel.devices[0], to: .on)
+        await gate.open()
+        await read.value
+        XCTAssertEqual(viewModel.devices.first?.version, 2)
+        XCTAssertEqual(viewModel.devices.first?.state, .on)
+    }
+
     private func makeViewModel(_ api: StubAPIClient) -> (DevicesViewModel, SessionController) {
         let session = makeSignedInSession(api)
         let control = DeviceControlService(api: api, session: session)

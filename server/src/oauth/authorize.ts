@@ -123,7 +123,7 @@ export function authorizeRoutes(db: Db): Router {
 
     const pendingId = await createPendingAuthorization(db, {
       clientId: client.clientId,
-      clientHost: client.displayHost,
+      clientHost: client.displayHost ?? (new URL(redirect_uri).host || new URL(redirect_uri).protocol),
       redirectUri: redirect_uri,
       state: stateValue,
       codeChallenge: code_challenge,

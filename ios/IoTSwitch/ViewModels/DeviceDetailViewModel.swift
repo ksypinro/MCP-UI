@@ -31,6 +31,8 @@ final class DeviceDetailViewModel: ObservableObject {
     }
 
     private func adopt(_ device: Device) {
+        // A read started before a control can arrive after its confirmation.
+        guard device.version >= (self.device?.version ?? 0) else { return }
         phase = .loaded(device)
         onDeviceChanged?(device)
     }

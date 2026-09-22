@@ -7,9 +7,10 @@
  */
 
 import test from 'node:test';
+import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { createDb } from '../src/db/index.ts';
-import { resolveClient } from '../src/oauth/clients.ts';
+import { pinnedLookup, resolveClient } from '../src/oauth/clients.ts';
 
 test('a client_id that is not a URL and not registered resolves to nothing', async () => {
   const db = await createDb();
@@ -74,4 +75,24 @@ test('a redirect URI that would execute script is never registerable', async () 
   // Native apps legitimately use a reverse-DNS private-use scheme.
   assert.equal(isRegisterableRedirectUri('com.example.app:/oauth'), true);
   assert.equal(isRegisterableRedirectUri('https://app.example/cb#frag'), false);
+});
+
+
+test('pinned DNS supports Node connections with and without family autoselection', async () => {
+  const { createServer, createConnection } = await import('node:net');
+  const server = createServer(socket => socket.end());
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address !== 'string');
+    for (const autoSelectFamily of [true, false]) {
+      const socket = createConnection({
+        host: 'metadata.example', port: address.port, autoSelectFamily,
+        lookup: pinnedLookup({ address: '127.0.0.1', family: 4 })
+      });
+      try { await once(socket, 'connect'); }
+      finally { socket.destroy(); }
+    }
+  } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });
