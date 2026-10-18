@@ -15,6 +15,7 @@
 import { randomBytes } from 'node:crypto';
 import { mint, wellFormed } from '../tokens/format.ts';
 import { tokenDigest, tokenDigestCandidates } from '../tokens/hash.ts';
+import { grantRevoked } from '../revocation.ts';
 import type { Db, Queryable } from '../db/index.ts';
 import { ACCESS_TOKEN_TTL_SECONDS, REFRESH_TOKEN_TTL_SECONDS } from '../config.ts';
 import { AppError } from '../errors.ts';
@@ -29,6 +30,10 @@ export interface SessionTokens {
 export interface VerifiedSession {
   accountId: string;
   sessionId: string;
+  /** Stable across rotation: what an internal token is cached and revoked by. */
+  familyId: string;
+  /** Seconds the access token has left. */
+  expiresIn: number;
 }
 
 /*
@@ -72,8 +77,9 @@ export async function startSession(db: Db, accountId: string): Promise<SessionTo
  */
 export async function verifyAccessToken(db: Queryable, token: string | null): Promise<VerifiedSession | null> {
   if (!wellFormed('access', token)) return null;
-  const { rows } = await db.query<{ account_id: string; session_id: string }>(
-    `SELECT t.account_id, t.session_id
+  const { rows } = await db.query<{ account_id: string; session_id: string; family_id: string; expires_in: number }>(
+    `SELECT t.account_id, t.session_id, s.family_id,
+            GREATEST(0, EXTRACT(EPOCH FROM (t.expires_at - now()))::int) AS expires_in
        FROM access_tokens t
        JOIN sessions s ON s.id = t.session_id
       WHERE t.token_hash = ANY($1::text[])
@@ -83,7 +89,9 @@ export async function verifyAccessToken(db: Queryable, token: string | null): Pr
     [tokenDigestCandidates(token)]
   );
   const row = rows[0];
-  return row ? { accountId: row.account_id, sessionId: row.session_id } : null;
+  return row
+    ? { accountId: row.account_id, sessionId: row.session_id, familyId: row.family_id, expiresIn: row.expires_in }
+    : null;
 }
 
 interface SessionRow {
@@ -179,6 +187,8 @@ async function revokeFamily(tx: Queryable, familyId: string): Promise<void> {
     'UPDATE sessions SET revoked_at = now() WHERE family_id = $1 AND revoked_at IS NULL',
     [familyId]
   );
+  // A session family is the first-party app's grant.
+  grantRevoked(familyId);
 }
 
 /**

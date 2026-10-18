@@ -295,5 +295,40 @@ export const CRITERIA: Criterion[] = [
       'a document that does not name itself, or is too large, is refused',
       'client metadata fetches are budgeted per host'
     ]
+  },
+  {
+    id: 'AC-34', scenario: 'No adapter reaches the device rules without an exchanged internal token',
+    evidence: [
+      'no adapter reaches the device rules except through the Device Service',
+      'a valid internal token reaches the device rules as its subject',
+      'an inherited property name is an unknown tool, and unknown tools never run anonymously'
+    ]
+  },
+  {
+    id: 'AC-35', scenario: 'Internal tokens are audience-, scope- and workload-bound',
+    evidence: [
+      'an internal token names who, through what, for which one scope',
+      'every malformed or misdirected internal token is refused',
+      'alg none and HMAC key confusion never verify',
+      'an exchange can narrow scope but never widen it',
+      'each adapter may present only its own kind of credential',
+      'an internal token never outlives the credential it came from',
+      'a revoked grant cannot be exchanged, and its cached internal tokens are dropped'
+    ]
+  },
+  {
+    id: 'AC-36', scenario: 'Write budgets bound automated writes per grant and device',
+    evidence: [
+      'switching one device more than six times a minute is refused when enforced',
+      'more than twenty changes a minute across devices is refused when enforced',
+      'budgets are per grant: another client of the same person keeps its own',
+      'the REST API refuses an over-budget change with 429 and Retry-After'
+    ],
+    gap: 'Report-only by default (WRITE_BUDGETS=report) until a week of real use '
+      + 'shows the limits do not bite people. Enforcement is a configuration change.'
+  },
+  {
+    id: 'AC-37', scenario: 'Every change names the user, client, grant and adapter behind it',
+    evidence: ['every change is audited with the client, grant and adapter behind it']
   }
 ];

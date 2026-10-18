@@ -162,6 +162,38 @@ never the document's `client_name`: the document is self-asserted, so the name
 is whatever the client felt like claiming, while the host is what it had to
 control in order to serve it.
 
+## The Device Service and token exchange
+
+Neither front door touches device data itself. The MCP tools and the REST
+routes are adapters: they check shape, spend the write budget, and exchange
+the caller's token for an internal one before calling the Device Service
+(`src/device-service/`), which wraps the unchanged rules in
+`domain/devices.ts`.
+
+- **Exchange, never forward.** `exchange-client.ts` trades the caller's token
+  (RFC 8693, `oauth/exchange.ts`) for a one-minute ES256 JWT: audience
+  `https://device.internal`, exactly one scope, `act` naming the adapter and
+  `cnf` binding it to that adapter's workload identity. The MCP adapter may
+  exchange only OAuth tokens for the MCP resource; the REST gateway only
+  first-party sessions. Tokens are cached per grant and scope, and dropped
+  the moment the grant is revoked.
+- **Verify everything.** The Device Service checks signature, `typ: at+jwt`,
+  issuer, audience, expiry, the scope the operation needs, and that the token
+  names and is bound to the workload presenting it. The account comes from
+  `sub` and nowhere else.
+- **One table.** `mcp/policy.ts` gives each tool its scope, annotations and
+  write budget. The gate, the registrations and ChatGPT's security schemes
+  all read it. A tool name that is not in it is treated as protected.
+- **Budgets.** At most 6 switches a minute per device, 20 a minute and 10 new
+  devices an hour per grant — a hard ceiling on what an injected prompt can
+  make a host do. Report-only until `WRITE_BUDGETS=enforce`.
+- **Audit.** Every change records the client, grant, adapter and sign-in
+  method behind it, taken from the verified internal token.
+
+While everything runs in one process, a workload identity is a capability
+object created at start-up; when the components are split, it becomes the
+adapter's mTLS certificate.
+
 ## The MCP App views
 
 `src/mcp/ui/` holds the four views from spec section 9. Each page is assembled
@@ -213,8 +245,8 @@ unit test passed straight over.
 npm run acceptance
 ```
 
-Runs the suite and reports which of the 33 criteria — the 28 in section 12 of
-`../requirement.md`, plus five added by the authentication redesign — it establishes, which are only partly established, and
+Runs the suite and reports which of the 37 criteria — the 28 in section 12 of
+`../requirement.md`, plus nine added by the authentication redesign — it establishes, which are only partly established, and
 which cannot be established from here at all.
 
 It fails if a criterion's evidence goes missing, becomes ambiguous, or starts

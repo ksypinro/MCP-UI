@@ -4,6 +4,7 @@ import type { Db, Queryable } from '../db/index.ts';
 import { newId } from './crypto.ts';
 import { mint, wellFormed } from '../tokens/format.ts';
 import { tokenDigest, tokenDigestCandidates } from '../tokens/hash.ts';
+import { grantRevoked } from '../revocation.ts';
 import {
   AUTHORIZATION_CODE_TTL_SECONDS, OAUTH_ACCESS_TOKEN_TTL_SECONDS,
   OAUTH_REFRESH_TOKEN_TTL_SECONDS, PENDING_AUTHORIZATION_TTL_SECONDS, type Scope
@@ -272,6 +273,10 @@ export async function revokeGrant(db: Queryable, grantId: string): Promise<void>
     'UPDATE oauth_refresh_tokens SET revoked_at = now() WHERE grant_id = $1 AND revoked_at IS NULL',
     [grantId]
   );
+  // Inside a caller's transaction this fires before commit. Dropping a cache
+  // entry for a revocation that then rolls back costs one re-exchange; the
+  // other order could leave an internal token alive after a revocation.
+  grantRevoked(grantId);
 }
 
 export async function revokeGrantNow(db: Db, grantId: string): Promise<void> {

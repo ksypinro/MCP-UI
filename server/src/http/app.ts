@@ -8,6 +8,10 @@ import { oauthRoutes } from '../oauth/routes.ts';
 import { mcpRoutes } from '../mcp/routes.ts';
 import { MCP_PATH } from '../mcp/config.ts';
 import { API_BASE_URL, AUTH_BASE_URL, MCP_BASE_URL, SINGLE_ORIGIN } from '../config.ts';
+import { createDeviceService } from '../device-service/service.ts';
+import { ExchangeClient } from '../exchange-client.ts';
+import { createWorkload } from '../security/workload.ts';
+import { WriteBudgets } from '../write-budgets.ts';
 
 /**
  * Mounts `router` only for requests addressed to `baseUrl`'s host.
@@ -52,10 +56,19 @@ export function createApp(db: Db): Express {
   // The MCP endpoint. Its own authorization gate runs inside, on the parsed
   // body, because a refusal there has to be an HTTP status rather than a tool
   // result.
-  app.use(onHost(MCP_BASE_URL, mcpRoutes(db)));
+  // The Device Service, and the two adapters that may call it. Each adapter
+  // gets its own workload identity: internal tokens are bound to it, so one
+  // adapter cannot use a token minted for the other. Write budgets are
+  // shared, because they are counted per grant and per device, not per door.
+  const devices = createDeviceService(db);
+  const budgets = new WriteBudgets();
+  const mcpExchange = new ExchangeClient(db, createWorkload('mcp-rs'));
+  const apiExchange = new ExchangeClient(db, createWorkload('api-gw'));
+
+  app.use(onHost(MCP_BASE_URL, mcpRoutes({ db, devices, exchange: mcpExchange, budgets })));
 
   app.use(onHost(API_BASE_URL, authRoutes(db)));
-  app.use(onHost(API_BASE_URL, deviceRoutes(db)));
+  app.use(onHost(API_BASE_URL, deviceRoutes({ db, devices, exchange: apiExchange, budgets })));
 
   app.use(notFound());
   app.use(errorHandler({ jsonRpcPaths: [MCP_PATH] }));

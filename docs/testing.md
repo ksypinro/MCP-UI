@@ -1,6 +1,6 @@
 # Testing and verification
 
-252 automated tests, plus three harnesses for the things tests cannot reach.
+270 automated tests, plus three harnesses for the things tests cannot reach.
 This document explains what each layer proves — and, as importantly, what it
 does not.
 
@@ -10,9 +10,9 @@ does not.
 
 | | Count | Command | What it establishes |
 | --- | --- | --- | --- |
-| Server | 203 | `npm test` | Domain rules, HTTP contract, OAuth, MCP protocol, views |
+| Server | 221 | `npm test` | Domain rules, HTTP contract, OAuth, MCP protocol, views |
 | iOS | 49 | `xcodebuild … test` | View-model state machines, session lifecycle, transport |
-| Acceptance | 33 criteria | `npm run acceptance` | Which of §12 (and five redesign criteria) the suites actually establish |
+| Acceptance | 37 criteria | `npm run acceptance` | Which of §12 (and nine redesign criteria) the suites actually establish |
 | Client conformance | 18 checks | `npm run client-check` | That a compliant MCP client can find its way through |
 | Host readiness | 9 checks | `npm run host-check` | That everything failable without a host has already failed |
 | Views | manual | `node tools/mock-host/run.mjs` | What a view looks like and does |
@@ -24,7 +24,7 @@ does not.
 ```bash
 cd server
 npm install
-npm test                                   # 203
+npm test                                   # 221
 npm run typecheck
 npm run acceptance                         # the criteria map
 
@@ -61,6 +61,9 @@ to WebAssembly, so there is no database to provision.
 | `tokens.test.ts` | 4 | Token format, keyed-hash storage, pepper rotation |
 | `hosts.test.ts` | 3 | Each surface answers only on its own origin |
 | `password.test.ts` | 2 | Peppered Argon2id, upgrade of older hashes |
+| `exchange.test.ts` | 7 | Token exchange: claims, narrowing, adapter separation, lifetimes, caching, revocation, re-exchange |
+| `policy.test.ts` | 7 | Policy table completeness, write budgets on MCP and REST, the audit actor chain |
+| `device-service.test.ts` | 4 | Internal token verification, `alg: none` and key confusion, no adapter bypass |
 
 ---
 
@@ -71,7 +74,7 @@ npm run acceptance
 ```
 
 ```
-24 proven, 6 partial, 3 open   (203 tests ran, 203 passed)
+27 proven, 7 partial, 3 open   (221 tests ran, 221 passed)
 ```
 
 It maps each criterion in §12 to the tests that establish it. Evidence is

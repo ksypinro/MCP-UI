@@ -12,7 +12,7 @@ import { tokenDigestCandidates } from '../tokens/hash.ts';
 import { RESOURCE_URI, type Scope } from './config.ts';
 
 export type VerifiedToken =
-  | { ok: true; accountId: string; clientId: string; grantId: string; scopes: Scope[] }
+  | { ok: true; accountId: string; clientId: string; grantId: string; scopes: Scope[]; expiresIn: number }
   | { ok: false; reason: 'invalid_token' }
   | { ok: false; reason: 'insufficient_scope'; grantId: string; granted: Scope[]; required: Scope[] };
 
@@ -25,9 +25,10 @@ export async function verifyOAuthAccessToken(
   if (!wellFormed('access', token)) return { ok: false, reason: 'invalid_token' };
 
   const { rows } = await db.query<{
-    account_id: string; client_id: string; grant_id: string; scope: string; audience: string;
+    account_id: string; client_id: string; grant_id: string; scope: string; audience: string; expires_in: number;
   }>(
-    `SELECT g.account_id, g.client_id, t.grant_id, t.scope, t.audience
+    `SELECT g.account_id, g.client_id, t.grant_id, t.scope, t.audience,
+            GREATEST(0, EXTRACT(EPOCH FROM (t.expires_at - now()))::int) AS expires_in
        FROM oauth_access_tokens t
        JOIN oauth_grants g ON g.id = t.grant_id
       WHERE t.token_hash = ANY($1::text[])
@@ -55,6 +56,7 @@ export async function verifyOAuthAccessToken(
     accountId: row.account_id,
     clientId: row.client_id,
     grantId: row.grant_id,
-    scopes: granted
+    scopes: granted,
+    expiresIn: row.expires_in
   };
 }

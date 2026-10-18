@@ -126,11 +126,19 @@ test('a batch containing a protected call is challenged as a whole', async () =>
   assert.equal(response.status, 401);
 });
 
-test('a tool name that is only an inherited property is not treated as protected', async () => {
-  // `in` on a plain object matches toString and constructor. Classifying those
-  // as protected tools would answer 401 for a tool that does not exist.
-  const response = await callTool(h.base, 'toString');
-  assert.notEqual(response.status, 401);
+test('an inherited property name is an unknown tool, and unknown tools never run anonymously', async () => {
+  // `in` on a plain object matches toString and constructor; the policy table
+  // uses Object.hasOwn, so those are unknown tools rather than real ones.
+  // An unknown tool is treated as protected: without a token the answer is a
+  // challenge, never an anonymous run.
+  const anonymous = await callTool(h.base, 'toString');
+  assert.equal(anonymous.status, 401);
+
+  // With a token the SDK reports it as unknown, as a normal JSON-RPC answer.
+  const { accessToken } = await tokenFor(h);
+  const signedIn = await callTool(h.base, 'toString', {}, accessToken);
+  assert.equal(signedIn.status, 200);
+  assert.ok(signedIn.body.error || signedIn.body.result?.isError, 'reported as an error, not run');
 });
 
 /* ------------------------------------------------- AC-25: scope behaviour */

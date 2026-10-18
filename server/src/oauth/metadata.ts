@@ -36,6 +36,7 @@ metadataRouter.get('/.well-known/oauth-authorization-server', (_req, res) => {
     authorization_endpoint: `${ISSUER}/authorize`,
     token_endpoint: `${ISSUER}/token`,
     revocation_endpoint: `${ISSUER}/revoke`,
+    jwks_uri: `${ISSUER}/.well-known/jwks.json`,
     registration_endpoint: `${ISSUER}/register`,
     scopes_supported: SCOPES_SUPPORTED,
     response_types_supported: ['code'],

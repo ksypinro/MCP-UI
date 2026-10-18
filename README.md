@@ -28,7 +28,7 @@ graph LR
 | [`requirement.md`](./requirement.md) | The specification everything implements |
 | [`docs/`](./docs) | Architecture, code flow, sequence diagrams, testing |
 
-Roughly 15,400 lines, 252 tests.
+Roughly 16,600 lines, 270 tests.
 
 ---
 
@@ -41,7 +41,7 @@ Xcode 16+ only if you want the iOS app.
 cd server
 npm install
 npm start            # http://localhost:4000
-npm test             # 203 tests
+npm test             # 221 tests
 ```
 
 Nothing to provision. The store is [PGlite](https://pglite.dev) — real
@@ -119,14 +119,15 @@ unit test did.
 
 ```
 POST /v1/devices/…/state  ─┐
-                           ├─→  domain/devices.ts  ─→  PostgreSQL
-MCP tools/call             ─┘    validation · ownership · versions · audit
+                           ├─→  token exchange  ─→  Device Service  ─→  PostgreSQL
+MCP tools/call             ─┘   (token B, 60 s)     validation · ownership · versions · audit
 ```
 
-Both front doors call the **same** functions, which take an `Identity` rather
-than an HTTP request. Neither adapter validates a name, checks ownership or
-compares a version — so the two surfaces cannot drift apart. That is §3 of the
-specification, enforced structurally rather than by discipline.
+Both front doors call the **same** Device Service, which takes a verified
+internal token rather than an HTTP request. Neither adapter validates a name,
+checks ownership or compares a version — so the two surfaces cannot drift
+apart. That is §3 of the specification, enforced structurally rather than by
+discipline.
 
 Three ideas do most of the work:
 
@@ -191,6 +192,8 @@ Plus `/v1/auth/{signup,login,me,refresh,logout}`, the OAuth endpoints, and
 | `KNOWN_CLIENTS` | ChatGPT's CIMD URL | Metadata-document clients shown as verified on the consent screen |
 | `REQUIRE_OFFLINE_ACCESS_FOR_REFRESH` | `false` | Issue refresh tokens only to clients that ask for `offline_access` |
 | `ARGON2_MEMORY_KIB`, `ARGON2_TIME_COST` | `65536`, `3` | Password hashing cost |
+| `SIGNING_KEYS` | the key file | JSON array of private P-256 JWKs, current first, that sign internal tokens. Published at `/.well-known/jwks.json` |
+| `WRITE_BUDGETS` | `report` | `enforce` refuses writes over budget: 6 switches a minute per device, 20 a minute and 10 new devices an hour per grant |
 | `DATABASE_PATH` | `./.data` | Delete it to reset |
 | `ACCESS_TOKEN_TTL_SECONDS` | `900` | |
 | `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | |
@@ -204,8 +207,8 @@ Plus `/v1/auth/{signup,login,me,refresh,logout}`, the OAuth endpoints, and
 
 ## Status
 
-252 tests pass. `npm run acceptance` reports **24 of 33** acceptance criteria
-proven, 6 partial, 3 open. Five of the thirty-three (AC-29 to AC-33) come from the
+270 tests pass. `npm run acceptance` reports **27 of 37** acceptance criteria
+proven, 7 partial, 3 open. Nine of the thirty-seven (AC-29 to AC-37) come from the
 [authentication redesign](./docs/authentication-architecture/authentication-architecture.md)
 rather than the specification.
 

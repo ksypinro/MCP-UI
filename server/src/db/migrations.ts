@@ -307,5 +307,19 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN auth_time      timestamptz,
         ADD COLUMN consent_id     text;
     `
+  },
+  {
+    name: '009_audit_actor_chain',
+    sql: `
+      -- Who acted, through what, from where: the client the person used, the
+      -- grant (or first-party session family) it held, the workload that
+      -- called the Device Service for them, and how they signed in. Taken
+      -- from the verified internal token, never from a request field.
+      ALTER TABLE audit_events
+        ADD COLUMN client_id   text,
+        ADD COLUMN grant_id    text,
+        ADD COLUMN via         text,
+        ADD COLUMN auth_method text;
+    `
   }
 ];
