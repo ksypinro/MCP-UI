@@ -74,10 +74,15 @@ final class SessionController: ObservableObject {
             let renewed: String
             do {
                 renewed = try await refreshOnce()
-            } catch {
+            } catch APIError.unauthenticated {
+                // The backend rejected the refresh token: the session is gone.
                 sessionExpired()
                 throw APIError.unauthenticated
             }
+            // Anything else — offline, a timeout, a rate limit — says nothing
+            // about the session, so it propagates and the session survives.
+            // Signing out here wiped a perfectly good refresh token whenever
+            // the access token happened to expire while the network was down.
             do {
                 return try await operation(renewed)
             } catch APIError.unauthenticated {

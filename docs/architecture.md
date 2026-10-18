@@ -106,13 +106,13 @@ server/
     oauth/              OAuth 2.1 authorization server
     mcp/                MCP adapter: gate, tools, resources
       ui/assets/        the four views, plus the shared bridge and stylesheet
-  test/                 155 tests
+  test/                 178 tests
   acceptance/           criteria mapped to the tests that establish them
   tools/                dev harnesses: mock-host, host-check, client-check
 
 ios/
   IoTSwitch/            SwiftUI app — models, networking, session, view models, views
-  IoTSwitchTests/       47 tests
+  IoTSwitchTests/       49 tests
 
 spike/                  phase 0 feasibility spike, superseded and kept as a record
 ```
@@ -432,3 +432,10 @@ PostgreSQL SQL precisely so that closing that gap is one file.
 
 Eight acceptance criteria cannot be closed without a host account or a
 physical device. `npm run acceptance` names each one.
+
+The redesign that addresses these and the authentication gaps found in
+review is in [Authentication Architecture v2](./authentication-architecture/authentication-architecture.md),
+delivered by its [implementation plan](./authentication-architecture/implementation-plan.md).
+Phase 0 of that plan (security headers on the authorization pages, rate-limit
+keys chosen after verification, atomic code and refresh handling, the ChatGPT
+challenge form, bridge origin pinning, and the iOS refresh fix) is implemented.

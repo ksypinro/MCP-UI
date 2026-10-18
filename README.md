@@ -28,7 +28,7 @@ graph LR
 | [`requirement.md`](./requirement.md) | The specification everything implements |
 | [`docs/`](./docs) | Architecture, code flow, sequence diagrams, testing |
 
-Roughly 12,700 lines, 202 tests.
+Roughly 13,700 lines, 227 tests.
 
 ---
 
@@ -41,7 +41,7 @@ Xcode 16+ only if you want the iOS app.
 cd server
 npm install
 npm start            # http://localhost:4000
-npm test             # 155 tests
+npm test             # 178 tests
 ```
 
 Nothing to provision. The store is [PGlite](https://pglite.dev) — real
@@ -189,15 +189,20 @@ Plus `/v1/auth/{signup,login,me,refresh,logout}`, the OAuth endpoints, and
 | `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | `20` | Credential submissions per address |
 | `TRUST_PROXY` | off | Only behind a proxy you control |
+| `AUTHORIZE_VIEW_RATE_LIMIT_PER_MINUTE` | `60` | Authorization page views per address |
+| `REFRESH_GRACE_SECONDS` | `30` | A duplicate refresh inside this window gets the identical response instead of revoking the grant |
+| `CHATGPT_TOOL_CHALLENGE` | off | `trusted-header`: answer ChatGPT's unauthenticated calls with a tool-level challenge. Needs `TRUST_PROXY` and a proxy that sets `X-Verified-Client: chatgpt` from ChatGPT's mTLS certificate and strips it otherwise |
 
 ---
 
 ## Status
 
-202 tests pass. `npm run acceptance` reports **20 of 28** acceptance criteria
-proven, 5 partial, 3 open.
+227 tests pass. `npm run acceptance` reports **21 of 30** acceptance criteria
+proven, 6 partial, 3 open. Two of the thirty (AC-29, AC-30) come from the
+[authentication redesign](./docs/authentication-architecture/authentication-architecture.md)
+rather than the specification.
 
-The remaining eight need a host account or a physical device — whether a host
+Eight of the rest need a host account or a physical device — whether a host
 renders the views, how many rows survive an inline card, whether every write
 is confirmed, iPad. The report names each gap rather than letting a green
 suite imply otherwise. They close in

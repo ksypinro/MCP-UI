@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant AS as Authorization Server
+    participant BUS as Revocation events
+    participant RS as MCP Resource Server
+    participant GW as REST API Gateway
+    participant H as Host MCP client
+    U->>AS: Connected apps page: disconnect Claude
+    AS->>AS: set grant revoked_at, delete access tokens, revoke refresh family
+    AS->>BUS: publish grant revoked, grant id
+    BUS-->>RS: drop introspection cache and token B entries for the grant
+    BUS-->>GW: same
+    H->>RS: next tools/call with old token A
+    RS->>AS: introspect
+    AS-->>RS: active false
+    RS-->>H: 401 invalid_token
+    H->>AS: refresh attempt
+    AS-->>H: invalid_grant
+    Note over U,H: iOS logout revokes only the iOS grant. Each grant is revoked separately, as requirement 7.2 asks.

@@ -21,15 +21,19 @@ const bridgeSource = readFileSync(
 interface Loaded {
   app: any;
   sent: any[];
-  deliver: (message: unknown, source?: unknown) => void;
+  deliver: (message: unknown, source?: unknown, origin?: string) => void;
+  targets: string[];
   window: any;
 }
 
 function loadBridge(): Loaded {
   const sent: any[] = [];
+  const targets: string[] = [];
   const listeners: Record<string, ((event: any) => void)[]> = {};
 
-  const parent = { postMessage: (message: unknown) => { sent.push(message); } };
+  const parent = {
+    postMessage: (message: unknown, targetOrigin: string) => { sent.push(message); targets.push(targetOrigin); }
+  };
   const window: any = {
     parent,
     innerWidth: 402,
@@ -54,9 +58,10 @@ function loadBridge(): Loaded {
   return {
     app: window.mcpApp,
     sent,
+    targets,
     window,
-    deliver: (message, source = parent) => {
-      for (const handler of listeners.message ?? []) handler({ source, data: message });
+    deliver: (message, source = parent, origin = 'https://sandbox.host.example') => {
+      for (const handler of listeners.message ?? []) handler({ source, origin, data: message });
     }
   };
 }
@@ -202,4 +207,69 @@ test('the handshake reports the display modes the view supports', async () => {
   // And announces itself ready only after the host has answered.
   assert.ok(sent.some((m) => m.method === 'ui/notifications/initialized'));
   assert.deepEqual(app.hostCapabilities().availableDisplayModes, ['inline']);
+});
+
+async function handshake(loaded: Loaded, origin: string) {
+  const started = loaded.app.start();
+  const request = loaded.sent.find((m) => m.method === 'ui/initialize');
+  loaded.deliver({ jsonrpc: '2.0', id: request.id, result: { hostContext: {} } }, undefined, origin);
+  await started;
+}
+
+/** Answers the most recent request for `method`, so no timer is left pending. */
+function answer(loaded: Loaded, method: string, origin = 'https://sandbox.host.example') {
+  const request = [...loaded.sent].reverse().find((m) => m.method === method);
+  loaded.deliver({ jsonrpc: '2.0', id: request.id, result: { structuredContent: {} } }, undefined, origin);
+}
+
+test('only the handshake is posted to any origin', async () => {
+  // Posting with '*' throughout let any frame that could obtain a reference
+  // read the view's traffic — the defect behind CVE-2026-76894.
+  const loaded = loadBridge();
+  await handshake(loaded, 'https://sandbox.host.example');
+
+  const call = loaded.app.callTool('list_devices', {});
+  const indexOf = (method: string) => loaded.sent.findIndex((m) => m.method === method);
+  assert.equal(loaded.targets[indexOf('ui/initialize')], '*');
+  assert.equal(loaded.targets[indexOf('tools/call')], 'https://sandbox.host.example');
+  assert.equal(loaded.targets[indexOf('ui/notifications/initialized')], 'https://sandbox.host.example');
+  answer(loaded, 'tools/call');
+  await call;
+});
+
+test('after the handshake, messages from another origin are ignored', async () => {
+  const loaded = loadBridge();
+  await handshake(loaded, 'https://sandbox.host.example');
+  let called = false;
+  loaded.app.on('ui/notifications/tool-result', () => { called = true; });
+
+  loaded.deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: {} }, undefined, 'https://evil.example');
+  assert.equal(called, false);
+
+  loaded.deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: {} });
+  assert.equal(called, true);
+});
+
+test('an opaque "null" origin leaves the bridge unpinned but still source-checked', async () => {
+  const loaded = loadBridge();
+  await handshake(loaded, 'null');
+  assert.equal(loaded.app.hostOrigin(), null);
+
+  const call = loaded.app.callTool('list_devices', {});
+  assert.equal(loaded.targets[loaded.sent.findIndex((m) => m.method === 'tools/call')], '*');
+  answer(loaded, 'tools/call', 'null');
+  await call;
+
+  let called = false;
+  loaded.app.on('ui/notifications/tool-result', () => { called = true; });
+  loaded.deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: {} }, { imposter: true }, 'null');
+  assert.equal(called, false);
+});
+
+test('a notification whose params are not an object is dropped', () => {
+  const { app, deliver } = loadBridge();
+  let called = false;
+  app.on('ui/notifications/tool-result', () => { called = true; });
+  deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: 'not an object' });
+  assert.equal(called, false);
 });

@@ -349,6 +349,13 @@ test('replaying a rotated refresh token revokes the entire grant', async () => {
     client_id: authorization.clientId
   })).then((r) => r.json()) as Record<string, string>;
 
+  // Outside the grace window. Inside it, a duplicate is answered with the
+  // same response instead; see oauth-refresh.test.ts.
+  await h.db.query(
+    `UPDATE oauth_refresh_tokens SET replaced_at = replaced_at - interval '1 hour'
+      WHERE replaced_at IS NOT NULL`
+  );
+
   const replay = await fetch(`${h.base}/token`, json({
     grant_type: 'refresh_token', refresh_token: first.body.refresh_token,
     client_id: authorization.clientId
@@ -530,4 +537,66 @@ test('DCR consent names the selected callback rather than the first registered h
   assert.ok(pendingIdFrom(page));
   assert.match(page, /<span class="host">attacker\.example<\/span>/);
   assert.doesNotMatch(page, /chatgpt\.com/);
+});
+
+/* ------------------------------------------------------- page hardening */
+
+function assertUnframeable(response: Response, where: string): void {
+  const csp = response.headers.get('content-security-policy') ?? '';
+  assert.match(csp, /frame-ancestors 'none'/, `${where}: CSP must forbid framing`);
+  assert.equal(response.headers.get('x-frame-options'), 'DENY', `${where}: X-Frame-Options`);
+  assert.equal(response.headers.get('cache-control'), 'no-store', `${where}: Cache-Control`);
+  assert.equal(response.headers.get('referrer-policy'), 'no-referrer', `${where}: Referrer-Policy`);
+}
+
+test('authorization pages cannot be framed', async () => {
+  // RFC 9700 section 4.16: the page where credentials are typed must not
+  // render inside another site's frame. Every HTML response is checked,
+  // including the error pages and a re-rendered failed login.
+  const clientId = await sharedClient(h.base);
+  const { challenge } = pkcePair();
+  const page = await fetch(authorizeUrl(h.base, {
+    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
+    code_challenge: challenge, code_challenge_method: 'S256'
+  }));
+  assertUnframeable(page, 'login page');
+  const pending = pendingIdFrom(await page.text());
+
+  const failed = await fetch(`${h.base}/authorize`, form({
+    pending: pending ?? undefined, mode: 'login', username: 'nobody-here', password: 'wrong password entirely'
+  }));
+  assertUnframeable(failed, 'failed login');
+
+  assertUnframeable(await fetch(authorizeUrl(h.base, { client_id: 'client_unknown' })), 'unknown client');
+  assertUnframeable(await fetch(`${h.base}/authorize?pending=pa_missing`), 'expired link');
+  assertUnframeable(await fetch(`${h.base}/authorize/cancel`, form({ pending: 'pa_missing' })), 'cancel error');
+});
+
+test('the login form may redirect to the client it was issued for, and nowhere else', async () => {
+  // Browsers apply form-action to the redirect that follows a form POST, so
+  // 'self' alone would block the 302 back to the host's callback.
+  const clientId = await sharedClient(h.base);
+  const { challenge } = pkcePair();
+  const page = await fetch(authorizeUrl(h.base, {
+    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
+    code_challenge: challenge, code_challenge_method: 'S256'
+  }));
+  const csp = page.headers.get('content-security-policy') ?? '';
+  const formAction = csp.split(';').map((d) => d.trim()).find((d) => d.startsWith('form-action'));
+  assert.equal(formAction, `form-action 'self' ${new URL(REDIRECT_URI).origin}`);
+});
+
+test('the page styles itself only through its nonced stylesheet', async () => {
+  const clientId = await sharedClient(h.base);
+  const { challenge } = pkcePair();
+  const page = await fetch(authorizeUrl(h.base, {
+    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
+    code_challenge: challenge, code_challenge_method: 'S256'
+  }));
+  const html = await page.text();
+  const nonce = html.match(/<style nonce="([^"]+)">/)?.[1];
+  assert.ok(nonce, 'the stylesheet carries a nonce');
+  assert.match(page.headers.get('content-security-policy') ?? '', new RegExp(`style-src 'nonce-${nonce.replace(/[+/=]/g, '\\$&')}'`));
+  // An inline style attribute is not covered by a nonce and would be blocked.
+  assert.doesNotMatch(html, /\sstyle="/);
 });

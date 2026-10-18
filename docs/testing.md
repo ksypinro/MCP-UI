@@ -1,6 +1,6 @@
 # Testing and verification
 
-202 automated tests, plus three harnesses for the things tests cannot reach.
+227 automated tests, plus three harnesses for the things tests cannot reach.
 This document explains what each layer proves — and, as importantly, what it
 does not.
 
@@ -10,9 +10,9 @@ does not.
 
 | | Count | Command | What it establishes |
 | --- | --- | --- | --- |
-| Server | 155 | `npm test` | Domain rules, HTTP contract, OAuth, MCP protocol, views |
-| iOS | 47 | `xcodebuild … test` | View-model state machines, session lifecycle, transport |
-| Acceptance | 28 criteria | `npm run acceptance` | Which of §12 the suites actually establish |
+| Server | 178 | `npm test` | Domain rules, HTTP contract, OAuth, MCP protocol, views |
+| iOS | 49 | `xcodebuild … test` | View-model state machines, session lifecycle, transport |
+| Acceptance | 30 criteria | `npm run acceptance` | Which of §12 (and two redesign criteria) the suites actually establish |
 | Client conformance | 18 checks | `npm run client-check` | That a compliant MCP client can find its way through |
 | Host readiness | 9 checks | `npm run host-check` | That everything failable without a host has already failed |
 | Views | manual | `node tools/mock-host/run.mjs` | What a view looks like and does |
@@ -24,7 +24,7 @@ does not.
 ```bash
 cd server
 npm install
-npm test                                   # 155
+npm test                                   # 178
 npm run typecheck
 npm run acceptance                         # the criteria map
 
@@ -42,18 +42,21 @@ to WebAssembly, so there is no database to provision.
 
 | File | Tests | Covers |
 | --- | --- | --- |
-| `oauth.test.ts` | 36 | Discovery, the full flow, PKCE, code replay, rotation, revocation |
+| `oauth.test.ts` | 39 | Discovery, the full flow, PKCE, code replay, rotation, revocation, page hardening |
 | `mcp.test.ts` | 24 | Anonymous access, the challenge, scopes, isolation, cross-surface |
 | `mcp-ui.test.ts` | 21 | Resource shape, CSP, no tokens in views, inline budget |
 | `api.test.ts` | 17 | Status codes, error codes, correlation ids |
 | `devices.test.ts` | 15 | Ownership, versions, folding, the cap, auditing |
 | `auth.test.ts` | 13 | Hashing, rotation, reuse detection, revocation |
-| `mcp-bridge.test.ts` | 9 | The shared bridge, in a vm |
+| `mcp-bridge.test.ts` | 13 | The shared bridge, in a vm, including origin pinning |
 | `concurrency.test.ts` | 7 | AC-09 and AC-10 |
 | `oauth-clients.test.ts` | 6 | CIMD, SSRF refusals, redirect rules |
 | `normalize.test.ts` | 5 | The folds |
 | `persistence.test.ts` | 1 | Survival across a restart |
-| `mcp-limits.test.ts` | 1 | Anonymous traffic is bounded |
+| `oauth-refresh.test.ts` | 6 | Concurrent refresh, the grace window, theft, single-use codes |
+| `chatgpt-challenge.test.ts` | 5 | The tool-level challenge and `securitySchemes` |
+| `mcp-limits.test.ts` | 3 | Limits keyed by address until a token verifies, then by grant |
+| `oauth-limits.test.ts` | 3 | Authorization page views, CIMD fetch budget and cache |
 
 ---
 
@@ -64,7 +67,7 @@ npm run acceptance
 ```
 
 ```
-20 proven, 5 partial, 3 open   (155 tests ran, 155 passed)
+21 proven, 6 partial, 3 open   (178 tests ran, 178 passed)
 ```
 
 It maps each criterion in §12 to the tests that establish it. Evidence is

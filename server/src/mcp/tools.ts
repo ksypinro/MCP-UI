@@ -55,7 +55,7 @@ function describe(device: Device): string {
 /** The namespaced key an error code travels under. */
 export const ERROR_META_KEY = 'iot/error';
 
-function toolError(error: unknown) {
+function toolError(error: unknown, challenge?: string) {
   const code = isAppError(error) ? error.code : 'INTERNAL_ERROR';
   const message = isAppError(error) ? error.message : 'Unexpected error.';
   return {
@@ -70,7 +70,13 @@ function toolError(error: unknown) {
     // content does not match the tool's output schema" instead of something a
     // person could act on. The schema describes a success; an error is not
     // one. The code travels in _meta, which is not schema-bound.
-    _meta: { [ERROR_META_KEY]: { code, message } }
+    //
+    // A challenge, when the gate hands one over, is the ChatGPT form of the
+    // HTTP 401: the host starts account linking from it. See gate.ts.
+    _meta: {
+      [ERROR_META_KEY]: { code, message },
+      ...(challenge ? { 'mcp/www_authenticate': [challenge] } : {})
+    }
   };
 }
 
@@ -78,7 +84,9 @@ const READ_ONLY = {
   readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false
 } as const;
 
-export function registerDeviceTools(server: McpServer, db: Db, identity: Identity | null): void {
+export function registerDeviceTools(
+  server: McpServer, db: Db, identity: Identity | null, challenge?: string
+): void {
   server.registerTool(
     'list_devices',
     {
@@ -92,7 +100,7 @@ export function registerDeviceTools(server: McpServer, db: Db, identity: Identit
       _meta: uiToolMeta(DEVICES_URI)
     },
     async () => {
-      if (!identity) return toolError(unauthenticated());
+      if (!identity) return toolError(unauthenticated(), challenge);
       try {
         const devices = await listDevices(db, identity);
         return {
@@ -124,7 +132,7 @@ export function registerDeviceTools(server: McpServer, db: Db, identity: Identit
       _meta: uiToolMeta(DEVICE_URI)
     },
     async ({ deviceId }) => {
-      if (!identity) return toolError(unauthenticated());
+      if (!identity) return toolError(unauthenticated(), challenge);
       try {
         const device = await getDevice(db, identity, deviceId);
         return { content: [{ type: 'text', text: describe(device) }], structuredContent: { device } };
@@ -164,7 +172,7 @@ export function registerDeviceTools(server: McpServer, db: Db, identity: Identit
       _meta: { ui: { visibility: ['model', 'app'] } }
     },
     async ({ deviceId, state, expectedVersion }) => {
-      if (!identity) return toolError(unauthenticated());
+      if (!identity) return toolError(unauthenticated(), challenge);
       try {
         const device = await controlDevice(db, identity, { deviceId, state, expectedVersion });
         return { content: [{ type: 'text', text: describe(device) }], structuredContent: { device } };
@@ -194,7 +202,7 @@ export function registerDeviceTools(server: McpServer, db: Db, identity: Identit
       _meta: { ui: { visibility: ['model', 'app'] } }
     },
     async ({ name }) => {
-      if (!identity) return toolError(unauthenticated());
+      if (!identity) return toolError(unauthenticated(), challenge);
       try {
         const device = await addDevice(db, identity, { name });
         return {

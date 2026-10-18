@@ -81,7 +81,7 @@ process.stdout.write(`requirement.md section 12, ${CRITERIA.length} criteria\n\n
 for (const { criterion, status, matched } of rows) {
   const detail = status === 'open'
     ? 'needs a host or a device'
-    : `${matched} test${matched === 1 ? '' : 's'}${criterion.gap ? ', plus a host' : ''}`;
+    : `${matched} test${matched === 1 ? '' : 's'}${criterion.gap ? ', plus a gap below' : ''}`;
   process.stdout.write(
     `  ${criterion.id}  ${criterion.scenario.padEnd(width)}  ${status.padEnd(7)}  ${detail}\n`
   );
@@ -101,7 +101,8 @@ if (outstanding.length > 0) {
   for (const { criterion } of outstanding) {
     process.stdout.write(`  ${criterion.id}  ${criterion.gap}\n`);
   }
-  process.stdout.write('\n  These close in spike/FINDINGS.md, with a host and a phone.\n');
+  process.stdout.write('\n  Host and device gaps close in spike/FINDINGS.md, with a host and a phone.\n'
+    + '  Any other gap names what closes it.\n');
 }
 
 if (failed > 0) problems.push(`${failed} test${failed === 1 ? '' : 's'} failing`);

@@ -1,0 +1,35 @@
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant APP as iOS app
+    participant SE as Secure Enclave
+    participant AA as App Attest
+    participant AS as Authorization Server
+    participant WEB as ASWebAuthenticationSession
+    participant KC as Keychain
+    participant GW as REST API Gateway
+    U->>APP: taps Log In or Sign Up
+    APP->>SE: create P-256 key, non-exportable
+    SE-->>APP: public key, thumbprint jkt
+    APP->>AA: generate assertion over PAR request hash
+    AA-->>APP: attestation assertion
+    APP->>AS: POST /par client_id, PKCE S256, state, resource api, dpop_jkt, attestation
+    Note over AS: first-party client pre-registered, attestation checked, parameters fixed server-side
+    AS-->>APP: request_uri, expires_in 60
+    APP->>WEB: start with /authorize?client_id and request_uri, ephemeral session
+    WEB->>AS: GET /authorize
+    AS-->>WEB: login page in system browser sheet
+    U->>WEB: passkey with Face ID, or password plus TOTP
+    WEB->>AS: POST /login
+    AS-->>WEB: 302 to https universal link callback with code, state, iss
+    WEB-->>APP: callback URL
+    Note over APP: state and iss checked exactly
+    APP->>SE: sign DPoP proof for POST /token
+    APP->>AS: POST /token code, code_verifier, DPoP proof
+    Note over AS: code single use, PKCE, proof jkt equals dpop_jkt
+    AS-->>APP: token N aud api 10 min, refresh token, both bound to jkt
+    APP->>KC: store refresh token, this device only, not synced
+    Note over APP: token N lives in memory only
+    APP->>SE: sign DPoP proof for GET /v1/devices
+    APP->>GW: GET /v1/devices Authorization DPoP token N, DPoP proof
+    GW-->>APP: 200 devices

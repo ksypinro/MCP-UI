@@ -1,0 +1,32 @@
+flowchart TB
+    subgraph T1 ["User side"]
+        direction LR
+        V["MCP App View"]
+        BR["Top-level browser"]
+        I["iOS app"]
+    end
+    subgraph T2 ["Clients holding tokens"]
+        direction LR
+        IDP["Enterprise IdP"]
+        H["Host MCP client"]
+    end
+    AS["Authorization Server"]
+    subgraph T3 ["Edge adapters"]
+        direction LR
+        RS["MCP Resource Server"]
+        GW["REST API Gateway"]
+    end
+    DS["Device Service"]
+    V -.-x|"no token, ever"| H
+    BR <-->|"AS session cookie<br/>__Host-, HttpOnly"| AS
+    AS -->|"authorization code<br/>60 s, single use"| H
+    IDP -.->|"ID-JAG, 5 min<br/>aud = AS issuer"| H
+    H <-->|"refresh token<br/>rotating, 30 days"| AS
+    I <-->|"refresh token<br/>rotating, DPoP-bound"| AS
+    H -->|"token A: aud = mcp<br/>15 min, DPoP if supported"| RS
+    I -->|"token N: aud = api<br/>10 min, DPoP-bound"| GW
+    RS -->|"token A as subject_token"| AS
+    GW -->|"token N as subject_token"| AS
+    AS -->|"token B: aud = device.internal<br/>60 s, act, mTLS-bound"| T3
+    RS -->|"token B"| DS
+    GW -->|"token B"| DS

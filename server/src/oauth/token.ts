@@ -9,10 +9,11 @@
 
 import { Router, type Request, type Response } from 'express';
 import type { Db } from '../db/index.ts';
-import { RESOURCE_URI } from './config.ts';
-import { verifyPkce } from './crypto.ts';
+import { REFRESH_GRACE_SECONDS, RESOURCE_URI } from './config.ts';
+import { fingerprint, verifyPkce } from './crypto.ts';
+import { MemorySealedResponses, type SealedResponses } from './sealed.ts';
 import {
-  consumeAuthorizationCode, establishGrant, readRefreshToken, revokeGrant, rotateRefreshToken
+  consumeAuthorizationCode, establishGrant, revokeGrantNow, rotateRefresh, type IssuedTokens
 } from './store.ts';
 
 function fail(res: Response, status: number, error: string, description: string): void {
@@ -25,11 +26,13 @@ function fail(res: Response, status: number, error: string, description: string)
 
 export function tokenRoutes(db: Db): Router {
   const router = Router();
+  // Per app, so that two servers in one process never share sealed responses.
+  const sealed = new MemorySealedResponses();
 
   router.post('/token', async (req: Request, res: Response) => {
     const grantType = req.body?.grant_type;
     if (grantType === 'authorization_code') return exchangeCode(db, req, res);
-    if (grantType === 'refresh_token') return exchangeRefreshToken(db, req, res);
+    if (grantType === 'refresh_token') return exchangeRefreshToken(db, sealed, req, res);
     return fail(res, 400, 'unsupported_grant_type',
       'Supported grant types are authorization_code and refresh_token.');
   });
@@ -57,7 +60,7 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
     // Exactly the grant this code produced, and nothing if it produced none.
     // A code burned by a failed exchange never became a grant, and guessing
     // from account and client would revoke an unrelated, newer one.
-    if (record.grantId) await revokeGrant(db, record.grantId);
+    if (record.grantId) await revokeGrantNow(db, record.grantId);
     return fail(res, 400, 'invalid_grant', 'This authorization code has already been used.');
   }
 
@@ -88,62 +91,72 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
   respond(res, tokens);
 }
 
-async function exchangeRefreshToken(db: Db, req: Request, res: Response): Promise<void> {
+async function exchangeRefreshToken(
+  db: Db, sealed: SealedResponses, req: Request, res: Response
+): Promise<void> {
   const { refresh_token, client_id, resource, scope } = req.body ?? {};
 
   if (typeof client_id !== 'string' || client_id.length === 0) {
     return fail(res, 400, 'invalid_request', 'client_id is required.');
   }
 
-  const record = await readRefreshToken(db, refresh_token);
-  if (!record) return fail(res, 400, 'invalid_grant', 'Unknown refresh token.');
+  // Keyed by the presented token, and bound to the client, so only the same
+  // client presenting the same token inside the window gets the copy.
+  const sealKey = typeof refresh_token === 'string' ? `${client_id}:${fingerprint(refresh_token)}` : '';
 
-  if (record.alreadyReplaced) {
-    // A legitimate client never replays a rotated refresh token, so treat this
-    // as theft and take down the whole grant — including the token the thief
-    // did not steal. Done before the refusal is sent, and outside any
-    // transaction that the refusal would roll back.
-    await revokeGrant(db, record.grantId);
-    return fail(res, 400, 'invalid_grant', 'This refresh token was already used. The grant has been revoked.');
-  }
-  if (record.revoked || record.grantRevoked || record.expired) {
-    return fail(res, 400, 'invalid_grant', 'This refresh token is no longer valid.');
-  }
-  if (client_id !== record.clientId) {
-    return fail(res, 400, 'invalid_grant', 'This refresh token was issued to a different client.');
-  }
-  if (resource !== undefined && resource !== record.audience) {
-    return fail(res, 400, 'invalid_target', 'resource does not match this grant.');
-  }
+  const outcome = await rotateRefresh(db, refresh_token, {
+    clientId: client_id,
+    resource,
+    scope,
+    graceSeconds: REFRESH_GRACE_SECONDS,
+    seal: (issued) => sealed.seal(sealKey, tokenBody(issued), REFRESH_GRACE_SECONDS)
+  });
 
-  // A refresh may narrow scope but never widen it (RFC 6749 section 6).
-  let scopeToIssue = record.scope;
-  if (typeof scope === 'string' && scope.trim().length > 0) {
-    const granted = record.scope.split(' ').filter(Boolean);
-    const requested = scope.split(/\s+/).filter(Boolean);
-    if (requested.some((entry) => !granted.includes(entry))) {
-      return fail(res, 400, 'invalid_scope', 'A refresh cannot request scopes beyond the original grant.');
+  switch (outcome.kind) {
+    case 'rotated':
+      return respond(res, outcome.issued);
+    case 'replay': {
+      // The same request again, inside the window: give back exactly what the
+      // first one received. If that copy is gone (a restart), refuse without
+      // revoking — the caller already holds the tokens, or will sign in again.
+      const body = sealed.unseal(sealKey);
+      if (!body) return fail(res, 400, 'invalid_grant', 'This refresh token was already used.');
+      return sendTokens(res, body);
     }
-    scopeToIssue = requested.join(' ');
+    case 'theft':
+      return fail(res, 400, 'invalid_grant', 'This refresh token was already used. The grant has been revoked.');
+    case 'invalid_target':
+      return fail(res, 400, 'invalid_target', 'resource does not match this grant.');
+    case 'invalid_scope':
+      return fail(res, 400, 'invalid_scope', 'A refresh cannot request scopes beyond the original grant.');
+    case 'invalid':
+      return fail(res, 400, 'invalid_grant', {
+        unknown: 'Unknown refresh token.',
+        dead: 'This refresh token is no longer valid.',
+        wrong_client: 'This refresh token was issued to a different client.'
+      }[outcome.reason]);
   }
-
-  const tokens = await rotateRefreshToken(
-    db, record.tokenHash, record.grantId, record.audience, scopeToIssue
-  );
-  respond(res, tokens);
 }
 
-function respond(res: Response, tokens: { accessToken: string; refreshToken: string; expiresIn: number; scope: string }): void {
+function tokenBody(tokens: IssuedTokens) {
+  return {
+    access_token: tokens.accessToken,
+    token_type: 'Bearer',
+    expires_in: tokens.expiresIn,
+    refresh_token: tokens.refreshToken,
+    scope: tokens.scope
+  };
+}
+
+function respond(res: Response, tokens: IssuedTokens): void {
+  sendTokens(res, tokenBody(tokens));
+}
+
+function sendTokens(res: Response, body: unknown): void {
   res.status(200)
     .set('Cache-Control', 'no-store')
     .set('Pragma', 'no-cache')
-    .json({
-      access_token: tokens.accessToken,
-      token_type: 'Bearer',
-      expires_in: tokens.expiresIn,
-      refresh_token: tokens.refreshToken,
-      scope: tokens.scope
-    });
+    .json(body);
 }
 
 export const TOKEN_RESOURCE = RESOURCE_URI;

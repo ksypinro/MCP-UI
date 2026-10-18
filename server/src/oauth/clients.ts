@@ -13,6 +13,7 @@ import { isIP, type LookupFunction } from 'node:net';
 import { randomBytes } from 'node:crypto';
 import type { Db, Queryable } from '../db/index.ts';
 import { MAX_REGISTERED_CLIENTS, UNUSED_CLIENT_TTL_SECONDS } from './config.ts';
+import { MemoryBucketStore, bucket } from '../security/rate-limit.ts';
 
 export interface ResolvedClient {
   clientId: string;
@@ -159,6 +160,61 @@ function fetchPinned(
 
 /* ------------------------------------------------------------------ CIMD */
 
+/**
+ * Outbound fetches per client_id host per minute.
+ *
+ * `GET /authorize` is reachable without an account, and each call with an
+ * unseen https client_id makes this server resolve and fetch a URL of the
+ * caller's choosing. Without a ceiling that is a free request amplifier aimed
+ * at any host the caller names. Successful documents are cached (below), so
+ * legitimate clients fetch once per cache period, not once per sign-in.
+ */
+const CIMD_FETCHES_PER_HOST_PER_MINUTE = 20;
+const takeCimdFetch = bucket(new MemoryBucketStore(), CIMD_FETCHES_PER_HOST_PER_MINUTE, 60_000);
+
+export async function cimdFetchAllowed(host: string): Promise<boolean> {
+  return (await takeCimdFetch(`cimd-host:${host.toLowerCase()}`)).ok;
+}
+
+/**
+ * Resolved documents, kept briefly so the fetch budget above does not throttle
+ * a popular host whose users all sign in at once. Positive results only: a
+ * failure is not remembered, so a fixed document is picked up on the next try.
+ */
+export class CimdCache {
+  private readonly entries = new Map<string, { client: ResolvedClient; expiresAt: number }>();
+  private readonly ttlMs: number;
+  private readonly maxEntries: number;
+  private readonly now: () => number;
+
+  constructor(options: { ttlMs: number; maxEntries: number; now?: () => number }) {
+    this.ttlMs = options.ttlMs;
+    this.maxEntries = options.maxEntries;
+    this.now = options.now ?? Date.now;
+  }
+
+  get(clientId: string): ResolvedClient | null {
+    const entry = this.entries.get(clientId);
+    if (!entry) return null;
+    if (entry.expiresAt <= this.now()) {
+      this.entries.delete(clientId);
+      return null;
+    }
+    return entry.client;
+  }
+
+  set(clientId: string, client: ResolvedClient): void {
+    if (this.entries.size >= this.maxEntries) {
+      // Oldest insertion first; Map preserves insertion order.
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+    this.entries.set(clientId, { client, expiresAt: this.now() + this.ttlMs });
+  }
+}
+
+const cimdCache = new CimdCache({ ttlMs: 5 * 60_000, maxEntries: 1000 });
+
 interface ClientIdMetadataDocument {
   client_id?: unknown;
   client_name?: unknown;
@@ -173,6 +229,10 @@ async function resolveMetadataDocument(clientId: string): Promise<ResolvedClient
     return null;
   }
   if (url.protocol !== 'https:') return null;
+
+  const cached = cimdCache.get(clientId);
+  if (cached) return cached;
+  if (!(await cimdFetchAllowed(url.host))) return null;
 
   const pinned = await resolvePinnedAddress(url.hostname);
   if (!pinned) return null;
@@ -192,7 +252,9 @@ async function resolveMetadataDocument(clientId: string): Promise<ResolvedClient
       : [];
     if (redirectUris.length === 0) return null;
 
-    return { clientId, redirectUris, displayHost: url.host };
+    const client = { clientId, redirectUris, displayHost: url.host };
+    cimdCache.set(clientId, client);
+    return client;
   } catch {
     return null;
   }

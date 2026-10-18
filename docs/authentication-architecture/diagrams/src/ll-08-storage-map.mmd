@@ -1,0 +1,36 @@
+flowchart TB
+    subgraph DEV ["User device"]
+        subgraph IOSB ["iOS app"]
+            M1["token N<br/>process memory only"]
+            K1[("Keychain<br/>refresh token<br/>AfterFirstUnlockThisDeviceOnly,<br/>not synchronizable")]
+            S1[("Secure Enclave<br/>DPoP private key,<br/>never leaves the chip")]
+        end
+        subgraph VB ["MCP App View"]
+            V1["nothing: no token, no code,<br/>no verifier, no secret in _meta,<br/>no localStorage identity"]
+        end
+        subgraph BRB ["Browser"]
+            C1["__Host-as_session cookie<br/>Secure, HttpOnly, SameSite=Lax"]
+        end
+    end
+    subgraph HOSTC ["Host vendor cloud"]
+        H1[("host token store<br/>token A, refresh token,<br/>PKCE verifier, DPoP key")]
+    end
+    subgraph IOT ["IoT Switch"]
+        subgraph ASS ["Authorization Server"]
+            A1[("Auth DB<br/>HMAC-SHA256 of every token,<br/>code, session and PAR handle")]
+            A2[("Argon2id + pepper<br/>password hashes")]
+        end
+        subgraph RSS ["Resource tier"]
+            R1["token B cache<br/>memory, keyed by grant and scope,<br/>purged on revocation"]
+            R2[("Redis<br/>DPoP jti, nonces,<br/>introspection cache 5 s")]
+        end
+        subgraph KMSB ["KMS / HSM"]
+            K2[("token pepper keys")]
+            K3[("JWT signing keys, ES256")]
+            K4[("password pepper")]
+        end
+        L1["Logs and traces<br/>allowlisted fields only,<br/>credentials redacted"]
+    end
+    A1 -.->|"keyed by"| K2
+    A2 -.->|"keyed by"| K4
+    R1 -.->|"signed by"| K3

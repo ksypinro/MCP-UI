@@ -1,0 +1,19 @@
+flowchart TB
+    S(["POST /token grant_type=refresh_token"]) --> P["parse form, client_id required,<br/>authenticate client if confidential"]
+    P --> TX["BEGIN<br/>SELECT token row FOR UPDATE<br/>by HMAC of presented token"]
+    TX --> F{"row found?"}
+    F -->|"no"| X1["ROLLBACK<br/>invalid_grant"]
+    F -->|"yes"| CB{"client_id matches grant,<br/>grant not revoked,<br/>not expired?"}
+    CB -->|"no"| X1
+    CB -->|"yes"| DP{"grant DPoP-bound?"}
+    DP -->|"yes"| PR{"valid proof,<br/>jkt matches?"}
+    PR -->|"no"| X2["ROLLBACK<br/>invalid_dpop_proof"]
+    PR -->|"yes"| RP
+    DP -->|"no"| RP{"replaced_by<br/>already set?"}
+    RP -->|"no"| ROT["insert successor pair,<br/>set replaced_by, replaced_at,<br/>seal response with AES-GCM<br/>in Redis for 30 s"]
+    ROT --> C1["COMMIT<br/>200 new tokens"]
+    RP -->|"yes"| GR{"replaced under 30 s ago,<br/>sealed response still present,<br/>successor not yet used?"}
+    GR -->|"yes"| SAME["unseal and return the<br/>identical response"]
+    SAME --> C1
+    GR -->|"no"| THEFT["revoke whole grant,<br/>emit revocation event,<br/>raise security alert"]
+    THEFT --> C2["COMMIT<br/>invalid_grant"]

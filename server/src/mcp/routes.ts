@@ -6,24 +6,26 @@
  * audience. It is not a free choice.
  */
 
-import { createHash } from 'node:crypto';
-import { Router, type NextFunction, type Request, type Response } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Db } from '../db/index.ts';
-import { context, rateLimit } from '../http/middleware.ts';
+import { context } from '../http/middleware.ts';
+import { MemoryBucketStore, bucket } from '../security/rate-limit.ts';
 import { MCP_PATH, SERVER_INFO } from './config.ts';
-import { bearerFrom, gate } from './gate.ts';
+import { gate, type GateLimits } from './gate.ts';
 import { registerDeviceTools } from './tools.ts';
 import { registerUi } from './resources.ts';
+import { exposeSecuritySchemes } from './security-schemes.ts';
 import type { Identity } from '../domain/types.ts';
 
-function buildServer(db: Db, identity: Identity | null): McpServer {
+function buildServer(db: Db, identity: Identity | null, challenge: string | undefined): McpServer {
   const server = new McpServer(SERVER_INFO, {
     capabilities: { tools: {}, resources: {} }
   });
-  registerDeviceTools(server, db, identity);
+  registerDeviceTools(server, db, identity, challenge);
   registerUi(server);
+  exposeSecuritySchemes(server);
   return server;
 }
 
@@ -32,28 +34,25 @@ export function mcpRoutes(db: Db): Router {
 
   // Discovery has to work without a token, which makes it the one part of
   // this endpoint an attacker can drive without an account — and each request
-  // builds a server and compiles five schemas. So anonymous traffic is
-  // bounded by address.
+  // builds a server and compiles five schemas. So traffic without a verified
+  // token is bounded by address.
   //
-  // Authenticated traffic is bounded by token instead. A host calls this from
-  // its own infrastructure on behalf of every one of its users, so an
-  // address-keyed limit would throttle all of them together the moment the
-  // integration became popular.
-  const anonymousLimiter = rateLimit(60, 60_000, (req) => `mcp-anon:${req.ip ?? 'unknown'}`);
-  const tokenLimiter = rateLimit(600, 60_000, (req) => {
-    const token = bearerFrom(req) ?? '';
-    return `mcp-token:${createHash('sha256').update(token).digest('hex')}`;
-  });
-
-  router.post(MCP_PATH, (req: Request, res: Response, next: NextFunction) => {
-    (bearerFrom(req) ? tokenLimiter : anonymousLimiter)(req, res, next);
-  });
+  // Traffic with a verified token is bounded by grant instead. A host calls
+  // this from its own infrastructure on behalf of every one of its users, so
+  // an address-keyed limit would throttle all of them together the moment the
+  // integration became popular. The gate picks between the two only after it
+  // has verified the token; see gate.ts.
+  const store = new MemoryBucketStore();
+  const limits: GateLimits = {
+    perAddress: bucket(store, 60, 60_000),
+    perGrant: bucket(store, 600, 60_000)
+  };
 
   router.post(MCP_PATH, async (req: Request, res: Response) => {
     const requestId = context(res)?.requestId ?? 'req_mcp';
 
     // Before the SDK sees anything. A refusal has to be an HTTP status.
-    const outcome = await gate(db, req, res, requestId);
+    const outcome = await gate(db, req, res, requestId, limits);
     if (!outcome.proceed) return;
 
     // Stateless: one server and transport per request, so a connection can
@@ -65,7 +64,7 @@ export function mcpRoutes(db: Db): Router {
     });
     res.on('close', () => { void transport.close(); });
 
-    const server = buildServer(db, outcome.identity);
+    const server = buildServer(db, outcome.identity, outcome.challenge);
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   });

@@ -1,0 +1,25 @@
+flowchart TB
+    user(["Person<br/>device owner"])
+    subgraph clients ["Clients"]
+        host["AI host: Claude, ChatGPT<br/>third-party OAuth client<br/>renders MCP App Views"]
+        ios["IoT Switch iOS app<br/>first-party OAuth client"]
+    end
+    idp["Enterprise IdP<br/>Okta, Entra, Google<br/>optional"]
+    subgraph iot ["IoT Switch platform"]
+        as["Authorization Server<br/>auth.iot.example"]
+        rs["MCP Resource Server<br/>mcp.iot.example/mcp"]
+        gw["REST API Gateway<br/>api.iot.example"]
+        ds["Device Service<br/>internal only"]
+    end
+    user -->|"chats, taps a View"| host
+    user -->|"taps switches"| ios
+    user -->|"signs in, top-level browser only"| as
+    host -->|"OAuth 2.1, PKCE S256, resource, iss"| as
+    host -->|"MCP over HTTPS with token A"| rs
+    ios -->|"OAuth 2.1, PAR, PKCE, DPoP"| as
+    ios -->|"REST with DPoP-bound token N"| gw
+    idp -.->|"ID-JAG, enterprise tenants"| host
+    rs -->|"RFC 8693 token exchange"| as
+    gw -->|"RFC 8693 token exchange"| as
+    rs -->|"token B over mTLS"| ds
+    gw -->|"token B over mTLS"| ds

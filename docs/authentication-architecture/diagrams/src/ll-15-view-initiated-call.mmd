@@ -1,0 +1,30 @@
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant V as View
+    participant P as Sandbox proxy
+    participant H as Host
+    participant RS as MCP Resource Server
+    participant DS as Device Service
+    U->>V: taps the switch for Bedroom Lamp
+    V->>V: capture id, desired state, expectedVersion. Mark pending.
+    V->>P: postMessage tools/call control_device to pinned host origin
+    P->>H: relay after source and origin checks
+    H->>H: visibility includes app? approval policy for this tool?
+    opt host asks for confirmation
+        H->>U: Allow IoT Switch to switch on Bedroom Lamp?
+        U->>H: Allow
+    end
+    H->>RS: POST /mcp tools/call with token A and DPoP proof
+    RS->>RS: gate, policy, exchange for token B
+    RS->>DS: control with token B
+    alt applied
+        DS-->>RS: device version 8
+        RS-->>H: result with structuredContent device
+    else version conflict
+        DS-->>RS: DEVICE_VERSION_CONFLICT
+        RS-->>H: isError, code in _meta iot/error
+    end
+    H-->>P: JSON-RPC response
+    P-->>V: response, source checked by the View
+    V->>V: render with textContent. On conflict, re-read before saying anything.

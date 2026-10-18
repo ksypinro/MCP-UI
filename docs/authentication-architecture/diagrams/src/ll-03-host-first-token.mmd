@@ -1,0 +1,39 @@
+sequenceDiagram
+    autonumber
+    actor U as User
+    participant V as View (sandboxed)
+    participant H as Host MCP client
+    participant B as Top-level browser
+    participant RS as MCP Resource Server
+    participant AS as Authorization Server
+    participant C as Host CIMD document
+    U->>V: taps Log In on the auth card
+    V->>H: tools/call list_devices over postMessage
+    H->>RS: POST /mcp tools/call list_devices, no token
+    RS-->>H: HTTP 401 WWW-Authenticate Bearer resource_metadata, scope
+    H->>RS: GET /.well-known/oauth-protected-resource/mcp
+    RS-->>H: resource, authorization_servers, scopes_supported, DPoP algs
+    Note over H: resource must equal the connector URL. SSRF guards on every fetch.
+    H->>AS: GET /.well-known/oauth-authorization-server
+    AS-->>H: issuer, endpoints, S256, CIMD supported, iss supported
+    Note over H: issuer must match. Record issuer, PKCE verifier, state and DPoP key in the backend.
+    H->>B: open /authorize with client_id URL, PKCE S256, state, scope, resource, dpop_jkt
+    B->>AS: GET /authorize
+    AS->>C: fetch client_id URL via egress proxy, no redirects, 5 KB cap
+    C-->>AS: client_id, redirect_uris
+    Note over AS: client_id self-referential, redirect_uri exact match, resource canonical, scopes known
+    AS-->>B: login page, pending id bound to __Host- cookie
+    U->>B: passkey, or password plus TOTP
+    B->>AS: POST /login with CSRF token
+    AS-->>B: consent page naming client host and redirect host
+    U->>B: Allow
+    B->>AS: POST /consent with CSRF token
+    AS-->>B: 302 to redirect_uri with code, state, iss
+    B->>H: callback with code, state, iss
+    Note over H: state and iss compared exactly before redeeming
+    H->>AS: POST /token code, code_verifier, redirect_uri, client_id, resource, DPoP proof
+    Note over AS: atomic single-use consume, PKCE, client, redirect, resource, DPoP jkt
+    AS-->>H: token A aud mcp 15 min, rotating refresh token, Cache-Control no-store
+    H->>RS: retry tools/call list_devices with token A
+    RS-->>H: 200 devices
+    H-->>V: tool result

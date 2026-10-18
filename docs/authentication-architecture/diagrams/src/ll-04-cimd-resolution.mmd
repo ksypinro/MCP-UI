@@ -1,0 +1,20 @@
+flowchart TB
+    S(["client_id received at /authorize or /par"]) --> A{"https URL,<br/>no fragment,<br/>2 KB max?"}
+    A -->|"no"| REG{"pre-registered<br/>or DCR id?"}
+    REG -->|"yes"| DB["load from client table"]
+    REG -->|"no"| E1["error page,<br/>never redirect"]
+    A -->|"yes"| CACHE{"fresh in CIMD cache?<br/>max 24 h"}
+    CACHE -->|"yes"| VAL
+    CACHE -->|"no"| DNS["resolve host via egress proxy"]
+    DNS --> PRIV{"any address private,<br/>loopback, link-local,<br/>CGNAT, NAT64, multicast?"}
+    PRIV -->|"yes"| E1
+    PRIV -->|"no"| GET["GET pinned to checked IP<br/>TLS SNI = host, 5 s timeout"]
+    GET --> R{"2xx, JSON,<br/>under 5 KB,<br/>no redirect?"}
+    R -->|"no"| E1
+    R -->|"yes"| VAL{"client_id in document<br/>equals URL exactly?"}
+    VAL -->|"no"| E1
+    VAL -->|"yes"| RU{"redirect_uri exactly in<br/>redirect_uris, allowed scheme?"}
+    DB --> RU
+    RU -->|"no"| E1
+    RU -->|"yes"| TRUST["classify trust:<br/>known host list, verified,<br/>other CIMD, unverified,<br/>DCR, self-asserted"]
+    TRUST --> OK(["create pending authorization"])

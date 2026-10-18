@@ -207,5 +207,14 @@ export const MIGRATIONS: Migration[] = [
 
       CREATE INDEX oauth_refresh_tokens_grant_idx ON oauth_refresh_tokens (grant_id);
     `
+  },
+  {
+    name: '004_refresh_replaced_at',
+    sql: `
+      -- When a refresh token was rotated. A duplicate refresh inside a short
+      -- window after this is answered with the identical response instead of
+      -- being treated as theft; see rotateRefresh in oauth/store.ts.
+      ALTER TABLE oauth_refresh_tokens ADD COLUMN replaced_at timestamptz;
+    `
   }
 ];
