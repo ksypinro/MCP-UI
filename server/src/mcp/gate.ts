@@ -11,15 +11,15 @@
 
 import type { Request, Response } from 'express';
 import type { Db } from '../db/index.ts';
-import { BASE_URL } from '../config.ts';
-import { SCOPES, type Scope } from '../oauth/config.ts';
+import { MCP_BASE_URL } from '../config.ts';
+import { SCOPES_SUPPORTED, type Scope } from '../oauth/config.ts';
 import { verifyOAuthAccessToken } from '../oauth/verify.ts';
 import { requiredScopeFor } from './config.ts';
 import type { Identity } from '../domain/types.ts';
 import { AppError } from '../errors.ts';
 import type { BucketResult } from '../security/rate-limit.ts';
 
-const PRM_URL = `${BASE_URL}/.well-known/oauth-protected-resource/mcp`;
+const PRM_URL = `${MCP_BASE_URL}/.well-known/oauth-protected-resource/mcp`;
 
 export function bearerFrom(req: Request): string | null {
   const header = req.get('authorization');
@@ -55,13 +55,13 @@ export function protectedCallsIn(body: unknown): { tools: string[]; scopes: Scop
 }
 
 /** The value of a WWW-Authenticate challenge, shared by the HTTP and tool-result forms. */
-export function challengeValue(error: string, description: string, scopes: readonly Scope[]): string {
+export function challengeValue(error: string, description: string, scopes: readonly string[]): string {
   return `Bearer error="${error}", error_description="${description}", `
     + `resource_metadata="${PRM_URL}", scope="${scopes.join(' ')}"`;
 }
 
 function challenge(
-  res: Response, status: 401 | 403, error: string, description: string, scopes: readonly Scope[]
+  res: Response, status: 401 | 403, error: string, description: string, scopes: readonly string[]
 ): void {
   res
     .status(status)
@@ -151,12 +151,12 @@ export async function gate(
     // Proceed with no identity: every protected handler then refuses, and
     // carries the challenge. Never with the token's identity — a token short
     // of scope must not reach a handler that trusts the gate for scope.
-    return { proceed: true, identity: null, challenge: challengeValue(error, description, SCOPES) };
+    return { proceed: true, identity: null, challenge: challengeValue(error, description, SCOPES_SUPPORTED) };
   }
 
   // Name every scope the integration needs, not just the missing one: a
   // client that re-consents with only what this challenge lists can lose
   // permissions it already had.
-  challenge(res, insufficient ? 403 : 401, error, description, SCOPES);
+  challenge(res, insufficient ? 403 : 401, error, description, SCOPES_SUPPORTED);
   return { proceed: false };
 }

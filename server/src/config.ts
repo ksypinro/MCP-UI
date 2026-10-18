@@ -11,6 +11,26 @@ export const PORT = Number(process.env.PORT ?? 4000);
  */
 export const BASE_URL = (process.env.BASE_URL ?? `http://localhost:${PORT}`).replace(/\/$/, '');
 
+/**
+ * The three public origins: the authorization server, the MCP endpoint and
+ * the REST API. Each defaults to BASE_URL, which keeps local development on
+ * one origin.
+ *
+ * In production they are separate hostnames. The authorization server's
+ * cookies are then never sent to, or readable by, the other two, and its
+ * pages can carry a strict CSP and framing policy without affecting anything
+ * else. All three must be final before launch: the issuer is what hosts key
+ * their stored client registration by, so changing it later disconnects
+ * every one of them.
+ */
+const origin = (value: string | undefined) => (value ?? BASE_URL).replace(/\/$/, '');
+export const AUTH_BASE_URL = origin(process.env.AUTH_BASE_URL);
+export const MCP_BASE_URL = origin(process.env.MCP_BASE_URL);
+export const API_BASE_URL = origin(process.env.API_BASE_URL);
+
+/** True when the three surfaces share one origin, as in local development. */
+export const SINGLE_ORIGIN = AUTH_BASE_URL === MCP_BASE_URL && MCP_BASE_URL === API_BASE_URL;
+
 /** PGlite persists here. See README for why this is not a real server yet. */
 export const DATABASE_PATH = process.env.DATABASE_PATH ?? './.data';
 

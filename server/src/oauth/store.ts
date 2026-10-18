@@ -1,7 +1,9 @@
 /** Persistence for the authorization server. */
 
 import type { Db, Queryable } from '../db/index.ts';
-import { fingerprint, newId, newSecret } from './crypto.ts';
+import { newId } from './crypto.ts';
+import { mint, wellFormed } from '../tokens/format.ts';
+import { tokenDigest, tokenDigestCandidates } from '../tokens/hash.ts';
 import {
   AUTHORIZATION_CODE_TTL_SECONDS, OAUTH_ACCESS_TOKEN_TTL_SECONDS,
   OAUTH_REFRESH_TOKEN_TTL_SECONDS, PENDING_AUTHORIZATION_TTL_SECONDS, type Scope
@@ -11,24 +13,44 @@ export interface PendingAuthorization {
   id: string;
   clientId: string;
   clientHost: string;
+  clientKind: 'cimd' | 'dcr' | 'preregistered';
+  clientTrust: 'verified' | 'unverified';
+  /** The CIMD document digest at authorization time, for consent memory. */
+  documentDigest: string | null;
   redirectUri: string;
   state: string | null;
   codeChallenge: string;
   resource: string;
   scopes: Scope[];
+  /** Whether offline_access was requested; see REQUIRE_OFFLINE_ACCESS_FOR_REFRESH. */
+  offlineAccess: boolean;
+  /** Keyed hash of the browser-binding cookie this authorization belongs to. */
+  bindingDigest: string;
 }
 
+export type NewPendingAuthorization = Omit<PendingAuthorization, 'id' | 'bindingDigest'>;
+
+/**
+ * Stores an authorization in flight, bound to the browser that started it.
+ *
+ * The binding is a cookie value the browser holds; only its keyed hash is
+ * stored. A pending id copied into another browser — a link sent to someone
+ * else, say — cannot be completed there, because that browser lacks the
+ * cookie.
+ */
 export async function createPendingAuthorization(
-  db: Queryable, pending: Omit<PendingAuthorization, 'id'>
+  db: Queryable, pending: NewPendingAuthorization, bindingValue: string
 ): Promise<string> {
   const id = newId('pa');
   await db.query(
     `INSERT INTO oauth_pending_authorizations
-       (id, client_id, client_host, redirect_uri, state, code_challenge, resource, scope, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now() + make_interval(secs => $9))`,
+       (id, client_id, client_host, client_kind, client_trust, document_digest, redirect_uri, state,
+        code_challenge, resource, scope, offline_access, binding_hash, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now() + make_interval(secs => $14))`,
     [
-      id, pending.clientId, pending.clientHost, pending.redirectUri, pending.state,
-      pending.codeChallenge, pending.resource, pending.scopes.join(' '),
+      id, pending.clientId, pending.clientHost, pending.clientKind, pending.clientTrust,
+      pending.documentDigest, pending.redirectUri, pending.state, pending.codeChallenge,
+      pending.resource, pending.scopes.join(' '), pending.offlineAccess, tokenDigest(bindingValue),
       PENDING_AUTHORIZATION_TTL_SECONDS
     ]
   );
@@ -38,12 +60,15 @@ export async function createPendingAuthorization(
 export async function readPendingAuthorization(
   db: Queryable, id: unknown
 ): Promise<PendingAuthorization | null> {
-  if (typeof id !== 'string' || id.length === 0) return null;
+  if (typeof id !== 'string' || id.length === 0 || id.length > 64) return null;
   const { rows } = await db.query<{
-    id: string; client_id: string; client_host: string; redirect_uri: string;
-    state: string | null; code_challenge: string; resource: string; scope: string;
+    id: string; client_id: string; client_host: string; client_kind: PendingAuthorization['clientKind'];
+    client_trust: PendingAuthorization['clientTrust']; document_digest: string | null;
+    redirect_uri: string; state: string | null; code_challenge: string; resource: string; scope: string;
+    offline_access: boolean; binding_hash: string;
   }>(
-    `SELECT id, client_id, client_host, redirect_uri, state, code_challenge, resource, scope
+    `SELECT id, client_id, client_host, client_kind, client_trust, document_digest, redirect_uri, state,
+            code_challenge, resource, scope, offline_access, binding_hash
        FROM oauth_pending_authorizations
       WHERE id = $1 AND expires_at > now()`,
     [id]
@@ -54,12 +79,23 @@ export async function readPendingAuthorization(
     id: row.id,
     clientId: row.client_id,
     clientHost: row.client_host,
+    clientKind: row.client_kind,
+    clientTrust: row.client_trust,
+    documentDigest: row.document_digest,
     redirectUri: row.redirect_uri,
     state: row.state,
     codeChallenge: row.code_challenge,
     resource: row.resource,
-    scopes: row.scope.split(' ').filter(Boolean) as Scope[]
+    scopes: row.scope.split(' ').filter(Boolean) as Scope[],
+    offlineAccess: row.offline_access,
+    bindingDigest: row.binding_hash
   };
+}
+
+/** Whether this browser's binding cookie is the one the authorization was started with. */
+export function pendingBelongsTo(pending: PendingAuthorization, bindingValue: unknown): boolean {
+  if (!wellFormed('binding', bindingValue)) return false;
+  return tokenDigestCandidates(bindingValue).includes(pending.bindingDigest);
 }
 
 export async function deletePendingAuthorization(db: Queryable, id: string): Promise<void> {
@@ -67,6 +103,12 @@ export async function deletePendingAuthorization(db: Queryable, id: string): Pro
 }
 
 /* ------------------------------------------------------------------ codes */
+
+export interface CodeContext {
+  /** When the person last authenticated. Carried for audit and future max_age checks. */
+  authTime: Date;
+  consentId: string | null;
+}
 
 /**
  * Claims the pending authorization and mints its code in one transaction.
@@ -76,7 +118,7 @@ export async function deletePendingAuthorization(db: Queryable, id: string): Pro
  * each mint a valid code.
  */
 export async function claimAndIssueCode(
-  db: Db, accountId: string, pending: PendingAuthorization
+  db: Db, accountId: string, pending: PendingAuthorization, context: CodeContext
 ): Promise<string | null> {
   return db.transaction(async (tx) => {
     const claimed = await tx.query<{ id: string }>(
@@ -84,21 +126,23 @@ export async function claimAndIssueCode(
       [pending.id]
     );
     if (claimed.rows.length !== 1) return null;
-    return issueAuthorizationCode(tx, accountId, pending);
+    return issueAuthorizationCode(tx, accountId, pending, context);
   });
 }
 
 async function issueAuthorizationCode(
-  db: Queryable, accountId: string, pending: PendingAuthorization
+  db: Queryable, accountId: string, pending: PendingAuthorization, context: CodeContext
 ): Promise<string> {
-  const code = newSecret();
+  const code = mint('code');
   await db.query(
     `INSERT INTO oauth_authorization_codes
-       (code_hash, account_id, client_id, redirect_uri, code_challenge, resource, scope, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, now() + make_interval(secs => $8))`,
+       (code_hash, account_id, client_id, redirect_uri, code_challenge, resource, scope,
+        offline_access, auth_time, consent_id, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + make_interval(secs => $11))`,
     [
-      fingerprint(code), accountId, pending.clientId, pending.redirectUri,
+      tokenDigest(code), accountId, pending.clientId, pending.redirectUri,
       pending.codeChallenge, pending.resource, pending.scopes.join(' '),
+      pending.offlineAccess, context.authTime, context.consentId,
       AUTHORIZATION_CODE_TTL_SECONDS
     ]
   );
@@ -116,11 +160,12 @@ export interface AuthorizationCodeRecord {
   expired: boolean;
   /** Set only if this code was successfully exchanged for a grant. */
   grantId: string | null;
+  offlineAccess: boolean;
 }
 
 interface CodeRow {
   account_id: string; client_id: string; redirect_uri: string; code_challenge: string;
-  resource: string; scope: string; grant_id: string | null;
+  resource: string; scope: string; grant_id: string | null; offline_access: boolean;
 }
 
 /**
@@ -137,15 +182,16 @@ interface CodeRow {
 export async function consumeAuthorizationCode(
   db: Queryable, code: unknown
 ): Promise<AuthorizationCodeRecord | null> {
-  if (typeof code !== 'string' || code.length === 0) return null;
-  const hash = fingerprint(code);
+  // A malformed code is refused without touching the database.
+  if (!wellFormed('code', code)) return null;
+  const candidates = tokenDigestCandidates(code);
 
   const { rows } = await db.query<CodeRow>(
     `UPDATE oauth_authorization_codes
         SET consumed_at = now()
-      WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > now()
-      RETURNING account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id`,
-    [hash]
+      WHERE code_hash = ANY($1::text[]) AND consumed_at IS NULL AND expires_at > now()
+      RETURNING account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id, offline_access`,
+    [candidates]
   );
   const fresh = rows[0];
   if (fresh) return toCodeRecord(fresh, false, false);
@@ -153,11 +199,11 @@ export async function consumeAuthorizationCode(
   // Nothing flipped: the code is unknown, expired, or already spent. Only a
   // read tells them apart.
   const { rows: misses } = await db.query<CodeRow & { already_consumed: boolean; expired: boolean }>(
-    `SELECT account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id,
+    `SELECT account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id, offline_access,
             (consumed_at IS NOT NULL) AS already_consumed,
             (expires_at <= now()) AS expired
-       FROM oauth_authorization_codes WHERE code_hash = $1`,
-    [hash]
+       FROM oauth_authorization_codes WHERE code_hash = ANY($1::text[])`,
+    [candidates]
   );
   const miss = misses[0];
   return miss ? toCodeRecord(miss, miss.already_consumed, miss.expired) : null;
@@ -173,7 +219,8 @@ function toCodeRecord(row: CodeRow, alreadyConsumed: boolean, expired: boolean):
     scope: row.scope,
     alreadyConsumed,
     expired,
-    grantId: row.grant_id
+    grantId: row.grant_id,
+    offlineAccess: row.offline_access
   };
 }
 
@@ -181,27 +228,30 @@ function toCodeRecord(row: CodeRow, alreadyConsumed: boolean, expired: boolean):
 
 export interface IssuedTokens {
   accessToken: string;
-  refreshToken: string;
+  /** Null when the grant carries no refresh right; see REQUIRE_OFFLINE_ACCESS_FOR_REFRESH. */
+  refreshToken: string | null;
   expiresIn: number;
   scope: string;
 }
 
 export async function issueTokens(
-  db: Queryable, grantId: string, audience: string, scope: string
+  db: Queryable, grantId: string, audience: string, scope: string, withRefresh = true
 ): Promise<IssuedTokens> {
-  const accessToken = newSecret();
-  const refreshToken = newSecret();
+  const accessToken = mint('access');
+  const refreshToken = withRefresh ? mint('refresh') : null;
 
   await db.query(
     `INSERT INTO oauth_access_tokens (token_hash, grant_id, audience, scope, expires_at)
      VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))`,
-    [fingerprint(accessToken), grantId, audience, scope, OAUTH_ACCESS_TOKEN_TTL_SECONDS]
+    [tokenDigest(accessToken), grantId, audience, scope, OAUTH_ACCESS_TOKEN_TTL_SECONDS]
   );
-  await db.query(
-    `INSERT INTO oauth_refresh_tokens (token_hash, grant_id, audience, scope, expires_at)
-     VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))`,
-    [fingerprint(refreshToken), grantId, audience, scope, OAUTH_REFRESH_TOKEN_TTL_SECONDS]
-  );
+  if (refreshToken) {
+    await db.query(
+      `INSERT INTO oauth_refresh_tokens (token_hash, grant_id, audience, scope, expires_at)
+       VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))`,
+      [tokenDigest(refreshToken), grantId, audience, scope, OAUTH_REFRESH_TOKEN_TTL_SECONDS]
+    );
+  }
 
   return {
     accessToken, refreshToken,
@@ -246,7 +296,7 @@ export interface RefreshTokenRecord {
 export async function readRefreshToken(
   db: Queryable, token: unknown
 ): Promise<RefreshTokenRecord | null> {
-  if (typeof token !== 'string' || token.length === 0) return null;
+  if (!wellFormed('refresh', token)) return null;
   const { rows } = await db.query<{
     token_hash: string; grant_id: string; account_id: string; client_id: string;
     audience: string; scope: string; already_replaced: boolean; revoked: boolean;
@@ -259,8 +309,8 @@ export async function readRefreshToken(
             (g.revoked_at IS NOT NULL) AS grant_revoked
        FROM oauth_refresh_tokens r
        JOIN oauth_grants g ON g.id = r.grant_id
-      WHERE r.token_hash = $1`,
-    [fingerprint(token)]
+      WHERE r.token_hash = ANY($1::text[])`,
+    [tokenDigestCandidates(token)]
   );
   const row = rows[0];
   if (!row) return null;
@@ -314,7 +364,7 @@ export async function rotateRefresh(
     seal: (issued: IssuedTokens) => void;
   }
 ): Promise<RefreshOutcome> {
-  if (typeof presented !== 'string' || presented.length === 0) return { kind: 'invalid', reason: 'unknown' };
+  if (!wellFormed('refresh', presented)) return { kind: 'invalid', reason: 'unknown' };
 
   return db.transaction<RefreshOutcome>(async (tx) => {
     const { rows } = await tx.query<LockedRefreshRow>(
@@ -329,9 +379,9 @@ export async function rotateRefresh(
                          AND (s.replaced_by IS NOT NULL OR s.revoked_at IS NOT NULL)) AS successor_used
          FROM oauth_refresh_tokens r
          JOIN oauth_grants g ON g.id = r.grant_id
-        WHERE r.token_hash = $1
+        WHERE r.token_hash = ANY($1::text[])
           FOR UPDATE OF r`,
-      [fingerprint(presented), request.graceSeconds]
+      [tokenDigestCandidates(presented), request.graceSeconds]
     );
     const row = rows[0];
     if (!row) return { kind: 'invalid', reason: 'unknown' };
@@ -365,7 +415,7 @@ export async function rotateRefresh(
     await tx.query(
       `UPDATE oauth_refresh_tokens SET replaced_by = $1, replaced_at = now()
         WHERE token_hash = $2 AND replaced_by IS NULL`,
-      [fingerprint(issued.refreshToken), row.token_hash]
+      [tokenDigest(issued.refreshToken!), row.token_hash]
     );
     request.seal(issued);
     return { kind: 'rotated', issued };
@@ -382,7 +432,9 @@ export async function rotateRefresh(
  */
 export async function establishGrant(
   db: Db,
-  options: { code: string; accountId: string; clientId: string; resource: string; scope: string }
+  options: {
+    code: string; accountId: string; clientId: string; resource: string; scope: string; withRefresh: boolean;
+  }
 ): Promise<IssuedTokens> {
   return db.transaction(async (tx) => {
     const grantId = newId('grant');
@@ -392,10 +444,10 @@ export async function establishGrant(
       [grantId, options.accountId, options.clientId, options.resource, options.scope]
     );
     await tx.query(
-      'UPDATE oauth_authorization_codes SET grant_id = $1 WHERE code_hash = $2',
-      [grantId, fingerprint(options.code)]
+      'UPDATE oauth_authorization_codes SET grant_id = $1 WHERE code_hash = ANY($2::text[])',
+      [grantId, tokenDigestCandidates(options.code)]
     );
-    return issueTokens(tx, grantId, options.resource, options.scope);
+    return issueTokens(tx, grantId, options.resource, options.scope, options.withRefresh);
   });
 }
 
@@ -405,9 +457,10 @@ export async function revokeByRefreshToken(db: Db, token: string): Promise<void>
 }
 
 export async function revokeByAccessToken(db: Db, token: string): Promise<void> {
+  if (!wellFormed('access', token)) return;
   const { rows } = await db.query<{ grant_id: string }>(
-    'SELECT grant_id FROM oauth_access_tokens WHERE token_hash = $1',
-    [fingerprint(token)]
+    'SELECT grant_id FROM oauth_access_tokens WHERE token_hash = ANY($1::text[])',
+    [tokenDigestCandidates(token)]
   );
   const grantId = rows[0]?.grant_id;
   if (grantId) await revokeGrantNow(db, grantId);

@@ -265,5 +265,35 @@ export const CRITERIA: Criterion[] = [
     ],
     gap: 'Proven on PGlite, which runs one statement at a time. Row-lock '
       + 'behaviour under real contention needs a Postgres server (plan 4.1).'
+  },
+  {
+    id: 'AC-31', scenario: 'Tokens are stored only as keyed hashes',
+    evidence: [
+      'tokens are stored only as keyed hashes',
+      'a token names its kind and carries a checksum',
+      'tokens issued under a retired pepper keep working until they expire',
+      'a stored hash cannot be checked without the pepper'
+    ]
+  },
+  {
+    id: 'AC-32', scenario: 'Consent names who is asking and is never remembered for unverified registration',
+    evidence: [
+      'DCR consent names the selected callback rather than the first registered host',
+      'a dynamically registered client is asked every time',
+      'asking for more than was approved asks again',
+      'a changed metadata document asks again',
+      'approving write access needs a recent sign-in',
+      'a pending authorization cannot be completed in another browser',
+      'a form posted without its CSRF token is refused'
+    ]
+  },
+  {
+    id: 'AC-33', scenario: 'Client metadata fetches cannot reach private networks',
+    evidence: [
+      'only ordinary public unicast addresses may be fetched',
+      'a metadata document on a private address is refused',
+      'a document that does not name itself, or is too large, is refused',
+      'client metadata fetches are budgeted per host'
+    ]
   }
 ];

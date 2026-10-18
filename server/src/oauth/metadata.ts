@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { ISSUER, RESOURCE_URI, SCOPES } from './config.ts';
+import { ISSUER, RESOURCE_URI, SCOPES_SUPPORTED } from './config.ts';
 
 /**
  * Discovery documents. A host follows exactly this chain: 401 names the
@@ -8,11 +8,14 @@ import { ISSUER, RESOURCE_URI, SCOPES } from './config.ts';
  */
 export const metadataRouter: Router = Router();
 
+/** Served by the MCP origin: it describes the protected resource. */
+export const protectedResourceMetadataRouter: Router = Router();
+
 function protectedResourceMetadata() {
   return {
     resource: RESOURCE_URI,
     authorization_servers: [ISSUER],
-    scopes_supported: SCOPES,
+    scopes_supported: SCOPES_SUPPORTED,
     bearer_methods_supported: ['header']
   };
 }
@@ -20,10 +23,10 @@ function protectedResourceMetadata() {
 // Both paths. RFC 9728 section 3.1: when the resource URL has a path
 // component, clients try the path-suffixed form first, and a server that only
 // answers the bare one is discovered by some hosts and not others.
-metadataRouter.get('/.well-known/oauth-protected-resource', (_req, res) => {
+protectedResourceMetadataRouter.get('/.well-known/oauth-protected-resource', (_req, res) => {
   res.json(protectedResourceMetadata());
 });
-metadataRouter.get('/.well-known/oauth-protected-resource/mcp', (_req, res) => {
+protectedResourceMetadataRouter.get('/.well-known/oauth-protected-resource/mcp', (_req, res) => {
   res.json(protectedResourceMetadata());
 });
 
@@ -34,7 +37,7 @@ metadataRouter.get('/.well-known/oauth-authorization-server', (_req, res) => {
     token_endpoint: `${ISSUER}/token`,
     revocation_endpoint: `${ISSUER}/revoke`,
     registration_endpoint: `${ISSUER}/register`,
-    scopes_supported: SCOPES,
+    scopes_supported: SCOPES_SUPPORTED,
     response_types_supported: ['code'],
     response_modes_supported: ['query'],
     grant_types_supported: ['authorization_code', 'refresh_token'],

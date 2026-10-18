@@ -1,23 +1,48 @@
 /**
- * The authorization endpoint and the hosted login it renders.
+ * The authorization endpoint and the pages behind it.
  *
- * Shape of the flow: GET validates everything once and stores the result
- * server-side under an opaque id; the browser carries only that id; POST reads
- * it back, authenticates the person, and redirects with a code.
+ * Shape of the flow:
+ *
+ *   GET  /authorize   validates everything once, stores the result server-side
+ *                     under an opaque id bound to this browser, and sends the
+ *                     person to sign in or straight to approval.
+ *   GET  /login       sign in or sign up. POST starts an authorization-server
+ *                     session and moves on to approval.
+ *   GET  /consent     names the client, where it will send them, and what it
+ *                     asks for. Skipped when an equivalent approval is
+ *                     remembered (see consents.ts). POST issues the code.
+ *   POST /consent/deny, /authorize/cancel   access_denied back to the client.
+ *   POST /logout      ends the session and returns to sign-in.
+ *
+ * Every step after the first requires the browser-binding cookie set at
+ * GET /authorize and a CSRF token derived from it, so a pending id copied to
+ * another browser, or a form posted from another site, gets nowhere.
  */
 
 import { Router, type Request, type Response } from 'express';
 import type { Db } from '../db/index.ts';
-import { AppError, isAppError } from '../errors.ts';
-import { createAccount, verifyCredentials } from '../domain/accounts.ts';
-import { ISSUER, RESOURCE_URI, SCOPES, parseScopes } from './config.ts';
+import { isAppError } from '../errors.ts';
+import { createAccount, getAccount, verifyCredentials } from '../domain/accounts.ts';
+import { ISSUER, RESOURCE_URI, SCOPES, parseScopes, requestsOfflineAccess } from './config.ts';
 import { redirectUriAllowed, resolveClient } from './clients.ts';
 import {
   claimAndIssueCode, createPendingAuthorization, deletePendingAuthorization,
-  readPendingAuthorization, type PendingAuthorization
+  pendingBelongsTo, readPendingAuthorization, type PendingAuthorization
 } from './store.ts';
-import { renderAuthorizePage, renderErrorPage } from './pages.ts';
+import { findRememberedConsent, recordConsent } from './consents.ts';
+import {
+  AS_SESSION_ABSOLUTE_SECONDS, readAsSession, revokeAsSession, startAsSession, type AsSession
+} from './session.ts';
+import { renderConsentPage, renderErrorPage, renderLoginPage } from './pages.ts';
 import { authPageHeaders, formActionSource, newNonce } from '../security/headers.ts';
+import { clearCookie, cookieName, readCookie, setCookie } from '../security/cookies.ts';
+import { mac, macMatches } from '../security/mac.ts';
+import { mint, wellFormed } from '../tokens/format.ts';
+
+/** Approving write access needs a sign-in at most this old. */
+const RECENT_SIGN_IN_SECONDS = 15 * 60;
+/** How long the browser-binding cookie lives: longer than any pending flow. */
+const BINDING_COOKIE_SECONDS = 60 * 60;
 
 /**
  * Sends one of our own pages. Every HTML response goes through here so that
@@ -31,8 +56,8 @@ function sendPage(
   res.status(status).type('html').send(render(nonce));
 }
 
-function sendError(res: Response, title: string, detail: string): void {
-  sendPage(res, 400, (nonce) => renderErrorPage(title, detail, nonce));
+function sendError(res: Response, title: string, detail: string, status = 400): void {
+  sendPage(res, status, (nonce) => renderErrorPage(title, detail, nonce));
 }
 
 /**
@@ -53,34 +78,109 @@ function redirectWithError(
   res.redirect(302, location.toString());
 }
 
-function renderPending(res: Response, pending: PendingAuthorization, mode: 'login' | 'signup', error?: string, username?: string): void {
-  // The login form's submission ends in a redirect to the client, so the CSP
-  // has to allow that destination as a form target.
-  sendPage(res, 200, (nonce) => renderAuthorizePage({
-    nonce,
-    pendingId: pending.id,
-    clientHost: pending.clientHost,
-    scopes: pending.scopes,
-    mode,
-    ...(error ? { error } : {}),
-    ...(username ? { username } : {})
-  }), [formActionSource(pending.redirectUri)]);
+/** This browser's binding value, minting and setting one if it has none. */
+function ensureBinding(req: Request, res: Response): string {
+  const existing = readCookie(req, cookieName('pa'));
+  if (wellFormed('binding', existing)) return existing;
+  const fresh = mint('binding');
+  setCookie(res, cookieName('pa'), fresh, BINDING_COOKIE_SECONDS);
+  return fresh;
+}
+
+/** The CSRF token for every form of one pending authorization in one browser. */
+function csrfFor(pending: PendingAuthorization, binding: string): string {
+  return mac('authorize-csrf', pending.id, binding);
+}
+
+function stepUrl(
+  step: 'login' | 'consent', pending: PendingAuthorization, extra: Record<string, string> = {}
+): string {
+  return `/${step}?${new URLSearchParams({ pending: pending.id, ...extra }).toString()}`;
+}
+
+function writes(pending: PendingAuthorization): boolean {
+  return pending.scopes.some((scope) => scope !== 'devices:read');
+}
+
+/** Whether this session may approve this request without signing in again. */
+function recentEnough(pending: PendingAuthorization, session: AsSession): boolean {
+  return !writes(pending) || session.authAgeSeconds <= RECENT_SIGN_IN_SECONDS;
 }
 
 export function authorizeRoutes(db: Db): Router {
   const router = Router();
 
+  /**
+   * The pending authorization named by `id`, if it exists and was started in
+   * this browser. Renders the error page itself and returns null otherwise.
+   */
+  async function loadStep(
+    req: Request, res: Response, id: unknown
+  ): Promise<{ pending: PendingAuthorization; binding: string } | null> {
+    const pending = await readPendingAuthorization(db, id);
+    if (!pending) {
+      sendError(res, 'This sign-in link has expired', 'Authorizations are only valid for a few minutes.');
+      return null;
+    }
+    const binding = readCookie(req, cookieName('pa'));
+    if (!pendingBelongsTo(pending, binding)) {
+      sendError(res,
+        'Open this in the browser you started from',
+        'This sign-in was started in a different browser, or its cookie was cleared.');
+      return null;
+    }
+    return { pending, binding: binding as string };
+  }
+
+  async function currentSession(req: Request): Promise<AsSession | null> {
+    return readAsSession(db, readCookie(req, cookieName('as_session')));
+  }
+
+  /** Claims the pending authorization and sends the code to the client. */
+  async function complete(
+    res: Response, pending: PendingAuthorization, session: AsSession, consentId: string | null
+  ): Promise<void> {
+    const code = await claimAndIssueCode(db, session.accountId, pending, {
+      authTime: session.authTime, consentId
+    });
+    if (!code) {
+      sendError(res,
+        'This sign-in link has already been used',
+        'Start again from the app that sent you here.');
+      return;
+    }
+    const location = new URL(pending.redirectUri);
+    location.searchParams.set('code', code);
+    if (pending.state) location.searchParams.set('state', pending.state);
+    location.searchParams.set('iss', ISSUER);
+    res.redirect(302, location.toString());
+  }
+
+  function renderLogin(
+    res: Response, pending: PendingAuthorization, binding: string,
+    options: { mode: 'login' | 'signup'; reauth?: boolean; error?: string; username?: string }
+  ): void {
+    // The cancel form's submission ends in a redirect to the client, so the
+    // CSP has to allow that destination as a form target.
+    sendPage(res, 200, (nonce) => renderLoginPage({
+      nonce,
+      pendingId: pending.id,
+      csrf: csrfFor(pending, binding),
+      clientHost: pending.clientHost,
+      ...options
+    }), [formActionSource(pending.redirectUri)]);
+  }
+
+  function refuseForm(res: Response): void {
+    sendError(res, 'This form has expired', 'Reload the page and try again.', 403);
+  }
+
+  /* -------------------------------------------------------- /authorize */
+
   router.get('/authorize', async (req: Request, res: Response) => {
-    // Resuming an authorization already in flight — the mode tabs link here.
-    if (req.query.pending !== undefined) {
-      const pending = await readPendingAuthorization(db, req.query.pending);
-      if (!pending) {
-        sendError(res,
-          'This sign-in link has expired',
-          'Authorizations are only valid for a few minutes.');
-        return;
-      }
-      renderPending(res, pending, req.query.mode === 'signup' ? 'signup' : 'login');
+    // A resume link from an older page.
+    if (typeof req.query.pending === 'string') {
+      res.redirect(303, `/login?${new URLSearchParams({ pending: req.query.pending }).toString()}`);
       return;
     }
 
@@ -114,7 +214,8 @@ export function authorizeRoutes(db: Db): Router {
         'Only the authorization code flow is supported.');
       return;
     }
-    if (code_challenge_method !== 'S256' || typeof code_challenge !== 'string' || code_challenge.length < 43) {
+    if (code_challenge_method !== 'S256' || typeof code_challenge !== 'string'
+        || code_challenge.length < 43 || code_challenge.length > 128) {
       redirectWithError(res, redirect_uri, stateValue, 'invalid_request',
         'PKCE with the S256 challenge method is required.');
       return;
@@ -138,32 +239,41 @@ export function authorizeRoutes(db: Db): Router {
       return;
     }
 
+    const binding = ensureBinding(req, res);
     const pendingId = await createPendingAuthorization(db, {
       clientId: client.clientId,
       clientHost: client.displayHost ?? (new URL(redirect_uri).host || new URL(redirect_uri).protocol),
+      clientKind: client.kind,
+      clientTrust: client.trust,
+      documentDigest: client.documentDigest,
       redirectUri: redirect_uri,
       state: stateValue,
       codeChallenge: code_challenge,
       resource: RESOURCE_URI,
-      scopes: requested
-    });
+      scopes: requested,
+      offlineAccess: scope === undefined || requestsOfflineAccess(scope)
+    }, binding);
 
-    const pending = await readPendingAuthorization(db, pendingId);
-    if (!pending) {
-      redirectWithError(res, redirect_uri, stateValue, 'server_error', 'Could not start authorization.');
-      return;
-    }
-    renderPending(res, pending, 'login');
+    const step = (await currentSession(req)) ? 'consent' : 'login';
+    res.redirect(303, `/${step}?${new URLSearchParams({ pending: pendingId }).toString()}`);
   });
 
-  router.post('/authorize', async (req: Request, res: Response) => {
-    const pending = await readPendingAuthorization(db, req.body?.pending);
-    if (!pending) {
-      sendError(res,
-        'This sign-in link has expired',
-        'Authorizations are only valid for a few minutes.');
-      return;
-    }
+  /* ------------------------------------------------------------ /login */
+
+  router.get('/login', async (req: Request, res: Response) => {
+    const step = await loadStep(req, res, req.query.pending);
+    if (!step) return;
+    renderLogin(res, step.pending, step.binding, {
+      mode: req.query.mode === 'signup' ? 'signup' : 'login',
+      reauth: req.query.reauth === '1'
+    });
+  });
+
+  router.post('/login', async (req: Request, res: Response) => {
+    const step = await loadStep(req, res, req.body?.pending);
+    if (!step) return;
+    const { pending, binding } = step;
+    if (!macMatches(csrfFor(pending, binding), req.body?.csrf)) return refuseForm(res);
 
     const mode = req.body?.mode === 'signup' ? 'signup' : 'login';
     const username = typeof req.body?.username === 'string' ? req.body.username : '';
@@ -175,7 +285,7 @@ export function authorizeRoutes(db: Db): Router {
         accountId = (await createAccount(db, username, password)).id;
       } catch (error) {
         const message = isAppError(error) ? error.message : 'Could not create that account.';
-        renderPending(res, pending, 'signup', message, username);
+        renderLogin(res, pending, binding, { mode: 'signup', error: message, username });
         return;
       }
     } else {
@@ -183,42 +293,101 @@ export function authorizeRoutes(db: Db): Router {
       if (!account) {
         // One generic failure for both an unknown username and a wrong
         // password, or this page becomes an account enumerator.
-        renderPending(res, pending, 'login', new AppError('UNAUTHENTICATED').message, username);
+        renderLogin(res, pending, binding, { mode: 'login', error: 'Invalid username or password.', username });
         return;
       }
       accountId = account.id;
     }
 
-    // Claiming and minting are one transaction: two submissions of the same
-    // authorization must not each end up with a valid code.
-    const code = await claimAndIssueCode(db, accountId, pending);
-    if (!code) {
-      sendError(res,
-        'This sign-in link has already been used',
-        mode === 'signup'
-          ? 'Your account was created. Start again from the app that sent you here and log in.'
-          : 'Start again from the app that sent you here.');
-      return;
-    }
-
-    const location = new URL(pending.redirectUri);
-    location.searchParams.set('code', code);
-    if (pending.state) location.searchParams.set('state', pending.state);
-    location.searchParams.set('iss', ISSUER);
-    res.redirect(302, location.toString());
+    // Always a fresh session on sign-in, never an upgraded old one, so a
+    // session id planted before sign-in cannot become an authenticated one.
+    await revokeAsSession(db, readCookie(req, cookieName('as_session')));
+    const token = await startAsSession(db, accountId, 'pwd');
+    setCookie(res, cookieName('as_session'), token, AS_SESSION_ABSOLUTE_SECONDS);
+    res.redirect(303, stepUrl('consent', pending));
   });
 
-  router.post('/authorize/cancel', async (req: Request, res: Response) => {
-    const pending = await readPendingAuthorization(db, req.body?.pending);
-    if (!pending) {
-      sendError(res, 'Nothing to cancel', 'This authorization has already ended.');
+  /* ---------------------------------------------------------- /consent */
+
+  router.get('/consent', async (req: Request, res: Response) => {
+    const step = await loadStep(req, res, req.query.pending);
+    if (!step) return;
+    const { pending, binding } = step;
+
+    const session = await currentSession(req);
+    const account = session ? await getAccount(db, session.accountId) : null;
+    if (!session || !account) {
+      res.redirect(303, stepUrl('login', pending));
       return;
     }
+    if (!recentEnough(pending, session)) {
+      res.redirect(303, stepUrl('login', pending, { reauth: '1' }));
+      return;
+    }
+
+    const remembered = await findRememberedConsent(db, session.accountId, pending);
+    if (remembered) {
+      await complete(res, pending, session, remembered);
+      return;
+    }
+
+    sendPage(res, 200, (nonce) => renderConsentPage({
+      nonce,
+      pendingId: pending.id,
+      csrf: csrfFor(pending, binding),
+      username: account.username,
+      clientHost: pending.clientHost,
+      clientKind: pending.clientKind,
+      clientTrust: pending.clientTrust,
+      redirectUri: pending.redirectUri,
+      scopes: pending.scopes
+    }), [formActionSource(pending.redirectUri)]);
+  });
+
+  router.post('/consent', async (req: Request, res: Response) => {
+    const step = await loadStep(req, res, req.body?.pending);
+    if (!step) return;
+    const { pending, binding } = step;
+    if (!macMatches(csrfFor(pending, binding), req.body?.csrf)) return refuseForm(res);
+
+    const session = await currentSession(req);
+    if (!session) {
+      res.redirect(303, stepUrl('login', pending));
+      return;
+    }
+    if (!recentEnough(pending, session)) {
+      res.redirect(303, stepUrl('login', pending, { reauth: '1' }));
+      return;
+    }
+
+    const consentId = await recordConsent(db, session.accountId, pending);
+    await complete(res, pending, session, consentId);
+  });
+
+  /* ------------------------------------------------------- deny, logout */
+
+  async function deny(req: Request, res: Response): Promise<void> {
+    const step = await loadStep(req, res, req.body?.pending);
+    if (!step) return;
+    const { pending, binding } = step;
+    if (!macMatches(csrfFor(pending, binding), req.body?.csrf)) return refuseForm(res);
     await deletePendingAuthorization(db, pending.id);
-    // Section 10.3 step 8: cancelling leaves the integration signed out and
+    // Section 10.3 step 8: declining leaves the integration signed out and
     // performs no mutation. The client is told, rather than left hanging.
     redirectWithError(res, pending.redirectUri, pending.state, 'access_denied',
       'The person declined to authorize this application.');
+  }
+
+  router.post('/consent/deny', deny);
+  router.post('/authorize/cancel', deny);
+
+  router.post('/logout', async (req: Request, res: Response) => {
+    const step = await loadStep(req, res, req.body?.pending);
+    if (!step) return;
+    if (!macMatches(csrfFor(step.pending, step.binding), req.body?.csrf)) return refuseForm(res);
+    await revokeAsSession(db, readCookie(req, cookieName('as_session')));
+    clearCookie(res, cookieName('as_session'));
+    res.redirect(303, stepUrl('login', step.pending));
   });
 
   return router;

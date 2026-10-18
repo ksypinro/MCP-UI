@@ -12,7 +12,9 @@
  * means it leaked, so the entire family is revoked rather than just that row.
  */
 
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
+import { mint, wellFormed } from '../tokens/format.ts';
+import { tokenDigest, tokenDigestCandidates } from '../tokens/hash.ts';
 import type { Db, Queryable } from '../db/index.ts';
 import { ACCESS_TOKEN_TTL_SECONDS, REFRESH_TOKEN_TTL_SECONDS } from '../config.ts';
 import { AppError } from '../errors.ts';
@@ -29,25 +31,18 @@ export interface VerifiedSession {
   sessionId: string;
 }
 
-function newToken(): string {
-  return randomBytes(32).toString('base64url');
-}
-
-/**
- * SHA-256, not Argon2. These are 256-bit random values, not user-chosen
- * secrets: there is nothing to brute-force, and a slow hash on every request
- * would buy nothing while costing latency.
+/*
+ * Tokens are minted by tokens/format.ts and stored as keyed hashes by
+ * tokens/hash.ts: 256-bit random values, so a fast keyed hash is enough and a
+ * slow one would only add latency to every request.
  */
-function fingerprint(token: string): string {
-  return createHash('sha256').update(token).digest('hex');
-}
 
 async function issueAccessToken(tx: Queryable, sessionId: string, accountId: string): Promise<string> {
-  const token = newToken();
+  const token = mint('access');
   await tx.query(
     `INSERT INTO access_tokens (token_hash, session_id, account_id, expires_at)
      VALUES ($1, $2, $3, now() + make_interval(secs => $4))`,
-    [fingerprint(token), sessionId, accountId, ACCESS_TOKEN_TTL_SECONDS]
+    [tokenDigest(token), sessionId, accountId, ACCESS_TOKEN_TTL_SECONDS]
   );
   return token;
 }
@@ -56,12 +51,12 @@ async function issueAccessToken(tx: Queryable, sessionId: string, accountId: str
 export async function startSession(db: Db, accountId: string): Promise<SessionTokens> {
   return db.transaction(async (tx) => {
     const sessionId = `ses_${randomBytes(9).toString('base64url')}`;
-    const refreshToken = newToken();
+    const refreshToken = mint('refresh');
 
     await tx.query(
       `INSERT INTO sessions (id, account_id, family_id, refresh_token_hash, expires_at)
        VALUES ($1, $2, $1, $3, now() + make_interval(secs => $4))`,
-      [sessionId, accountId, fingerprint(refreshToken), REFRESH_TOKEN_TTL_SECONDS]
+      [sessionId, accountId, tokenDigest(refreshToken), REFRESH_TOKEN_TTL_SECONDS]
     );
 
     const accessToken = await issueAccessToken(tx, sessionId, accountId);
@@ -76,16 +71,16 @@ export async function startSession(db: Db, accountId: string): Promise<SessionTo
  * token issued under it, without having to find and delete them.
  */
 export async function verifyAccessToken(db: Queryable, token: string | null): Promise<VerifiedSession | null> {
-  if (!token) return null;
+  if (!wellFormed('access', token)) return null;
   const { rows } = await db.query<{ account_id: string; session_id: string }>(
     `SELECT t.account_id, t.session_id
        FROM access_tokens t
        JOIN sessions s ON s.id = t.session_id
-      WHERE t.token_hash = $1
+      WHERE t.token_hash = ANY($1::text[])
         AND t.expires_at > now()
         AND s.revoked_at IS NULL
         AND s.expires_at > now()`,
-    [fingerprint(token)]
+    [tokenDigestCandidates(token)]
   );
   const row = rows[0];
   return row ? { accountId: row.account_id, sessionId: row.session_id } : null;
@@ -101,7 +96,7 @@ interface SessionRow {
 }
 
 export async function refreshSession(db: Db, refreshToken: unknown): Promise<SessionTokens> {
-  if (typeof refreshToken !== 'string' || refreshToken.length === 0) {
+  if (!wellFormed('refresh', refreshToken)) {
     throw new AppError('UNAUTHENTICATED', 'That session could not be refreshed.');
   }
 
@@ -113,8 +108,8 @@ export async function refreshSession(db: Db, refreshToken: unknown): Promise<Ses
   const outcome = await db.transaction<Outcome>(async (tx) => {
     const { rows } = await tx.query<SessionRow>(
       `SELECT id, account_id, family_id, revoked_at, replaced_by, (expires_at <= now()) AS expired
-         FROM sessions WHERE refresh_token_hash = $1 FOR UPDATE`,
-      [fingerprint(refreshToken)]
+         FROM sessions WHERE refresh_token_hash = ANY($1::text[]) FOR UPDATE`,
+      [tokenDigestCandidates(refreshToken)]
     );
     const session = rows[0];
     if (!session) return { ok: false, reason: 'unknown' };
@@ -133,12 +128,12 @@ export async function refreshSession(db: Db, refreshToken: unknown): Promise<Ses
     }
 
     const nextId = `ses_${randomBytes(9).toString('base64url')}`;
-    const nextRefresh = newToken();
+    const nextRefresh = mint('refresh');
 
     await tx.query(
       `INSERT INTO sessions (id, account_id, family_id, refresh_token_hash, expires_at)
        VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))`,
-      [nextId, session.account_id, session.family_id, fingerprint(nextRefresh), REFRESH_TOKEN_TTL_SECONDS]
+      [nextId, session.account_id, session.family_id, tokenDigest(nextRefresh), REFRESH_TOKEN_TTL_SECONDS]
     );
     // Marked replaced, but deliberately NOT revoked. Revoking here would kill
     // the outgoing access token the instant the refresh lands, so a client

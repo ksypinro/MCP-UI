@@ -17,6 +17,7 @@ import { gate, type GateLimits } from './gate.ts';
 import { registerDeviceTools } from './tools.ts';
 import { registerUi } from './resources.ts';
 import { exposeSecuritySchemes } from './security-schemes.ts';
+import { protectedResourceMetadataRouter } from '../oauth/metadata.ts';
 import type { Identity } from '../domain/types.ts';
 
 function buildServer(db: Db, identity: Identity | null, challenge: string | undefined): McpServer {
@@ -31,6 +32,10 @@ function buildServer(db: Db, identity: Identity | null, challenge: string | unde
 
 export function mcpRoutes(db: Db): Router {
   const router = Router();
+
+  // Protected resource metadata belongs to the resource, so it is served from
+  // the MCP origin the 401 challenge points at.
+  router.use(protectedResourceMetadataRouter);
 
   // Discovery has to work without a token, which makes it the one part of
   // this endpoint an attacker can drive without an account — and each request

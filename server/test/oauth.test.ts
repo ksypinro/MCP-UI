@@ -5,17 +5,39 @@
 
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { ISSUER, RESOURCE_URI, SCOPES } from '../src/oauth/config.ts';
+import { ISSUER, RESOURCE_URI, SCOPES, SCOPES_SUPPORTED } from '../src/oauth/config.ts';
 import { verifyOAuthAccessToken } from '../src/oauth/verify.ts';
 import { redirectUriAllowed } from '../src/oauth/clients.ts';
 import {
-  REDIRECT_URI, authorizeAs, authorizeUrl, exchange, form, json,
-  pendingIdFrom, pkcePair, registerClient, sharedClient, startServer, type Harness
+  Browser, REDIRECT_URI, authorizeAs, authorizeUrl, csrfFrom, exchange, form, json,
+  pendingIdFrom, pkcePair, registerClient, sharedClient, startServer, walkAuthorization, type Harness
 } from './oauth-helpers.ts';
 
 let h: Harness;
 before(async () => { h = await startServer(); });
 after(async () => { await h.close(); });
+
+/** Starts an authorization in `browser` and returns the sign-in page it lands on. */
+async function openLogin(browser: Browser, query: Record<string, string | undefined> = {}) {
+  const clientId = await sharedClient(h.base);
+  const { response } = await browser.follow(await browser.get(authorizeUrl(h.base, {
+    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
+    code_challenge: pkcePair().challenge, code_challenge_method: 'S256', ...query
+  })));
+  const html = await response.text();
+  return { response, html, pending: pendingIdFrom(html)!, csrf: csrfFrom(html)! };
+}
+
+/** Signs up a new person in `browser` and returns the consent page for that authorization. */
+async function openConsent(browser: Browser, query: Record<string, string | undefined> = {}) {
+  const login = await openLogin(browser, query);
+  const { response } = await browser.follow(await browser.post('/login', {
+    pending: login.pending, csrf: login.csrf, mode: 'signup',
+    username: `c${Date.now()}${Math.floor(Math.random() * 1e6)}`, password: 'correct horse battery staple'
+  }));
+  const html = await response.text();
+  return { response, html, pending: pendingIdFrom(html)!, csrf: csrfFrom(html)! };
+}
 
 /* ------------------------------------------------------------- discovery */
 
@@ -26,7 +48,7 @@ test('protected resource metadata is served at both well-known paths', async () 
     // answering only one makes discovery work for some hosts and not others.
     assert.equal(body.resource, RESOURCE_URI, `wrong resource at ${path}`);
     assert.deepEqual(body.authorization_servers, [ISSUER]);
-    assert.deepEqual(body.scopes_supported, [...SCOPES]);
+    assert.deepEqual(body.scopes_supported, [...SCOPES_SUPPORTED]);
   }
 });
 
@@ -232,10 +254,11 @@ test('a narrower scope request is honoured exactly', async () => {
 /* --------------------------------------------------- the forged-context bug */
 
 test('an authorization context cannot be forged by the browser', async () => {
-  // The spike round-tripped this record through the form as unsigned base64,
-  // which let anyone name their own redirect_uri and PKCE challenge, walk a
-  // victim through a genuine login page, and collect a live code. The browser
-  // now carries only an opaque id that has to already exist here.
+  // An earlier revision of the spike round-tripped the authorization context
+  // through the login form as unsigned base64, which let anyone name their own
+  // redirect_uri and PKCE challenge, walk a victim through a genuine login
+  // page, and collect a live code. The browser now carries only an opaque id
+  // that has to already exist here.
   const forged = Buffer.from(JSON.stringify({
     clientId: 'https://attacker.example/cimd.json',
     redirectUri: 'https://attacker.example/steal',
@@ -243,7 +266,7 @@ test('an authorization context cannot be forged by the browser', async () => {
     scopes: [...SCOPES]
   })).toString('base64');
 
-  const response = await fetch(`${h.base}/authorize`, form({
+  const response = await fetch(`${h.base}/login`, form({
     pending: forged, mode: 'signup', username: `v${Date.now()}`, password: 'correct horse battery staple'
   }));
 
@@ -252,24 +275,15 @@ test('an authorization context cannot be forged by the browser', async () => {
 });
 
 test('a pending authorization is spent once a code is issued', async () => {
-  const clientId = await sharedClient(h.base);
-  const { challenge } = pkcePair();
-  const page = await fetch(authorizeUrl(h.base, {
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256'
-  })).then((r) => r.text());
-  const pending = pendingIdFrom(page)!;
+  const browser = new Browser(h.base);
+  const consent = await openConsent(browser);
 
-  const first = await fetch(`${h.base}/authorize`, form({
-    pending, mode: 'signup', username: `spent${Date.now()}`, password: 'correct horse battery staple'
-  }));
+  const first = await browser.post('/consent', { pending: consent.pending, csrf: consent.csrf });
   assert.ok(first.headers.get('location')?.includes('code='));
 
   // Replaying the same pending id must not mint a second code for the same
   // authorization request.
-  const second = await fetch(`${h.base}/authorize`, form({
-    pending, mode: 'login', username: 'anyone', password: 'correct horse battery staple'
-  }));
+  const second = await browser.post('/consent', { pending: consent.pending, csrf: consent.csrf });
   assert.equal(second.status, 400);
   assert.equal(second.headers.get('location'), null);
 });
@@ -278,34 +292,26 @@ test('a pending authorization is spent once a code is issued', async () => {
 
 test('a wrong password re-renders the page and issues nothing', async () => {
   const existing = await authorizeAs(h.base);
-  const clientId = await sharedClient(h.base);
-  const { challenge } = pkcePair();
-  const page = await fetch(authorizeUrl(h.base, {
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256'
-  })).then((r) => r.text());
-  const pending = pendingIdFrom(page)!;
+  const browser = new Browser(h.base);
+  const login = await openLogin(browser);
 
-  const response = await fetch(`${h.base}/authorize`, form({
-    pending, mode: 'login', username: existing.username, password: 'definitely-wrong-password'
-  }));
+  const response = await browser.post('/login', {
+    pending: login.pending, csrf: login.csrf, mode: 'login',
+    username: existing.username, password: 'definitely-wrong-password'
+  });
 
   assert.equal(response.headers.get('location'), null);
   const html = await response.text();
   assert.match(html, /Invalid username or password/);
   assert.doesNotMatch(html, /code=/);
+  assert.equal(browser.cookies.has('as_session'), false, 'no session is started');
 });
 
 test('cancelling returns access_denied and mints no code', async () => {
-  const clientId = await sharedClient(h.base);
-  const { challenge } = pkcePair();
-  const page = await fetch(authorizeUrl(h.base, {
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    state: 'cancel-state', code_challenge: challenge, code_challenge_method: 'S256'
-  })).then((r) => r.text());
-  const pending = pendingIdFrom(page)!;
+  const browser = new Browser(h.base);
+  const login = await openLogin(browser, { state: 'cancel-state' });
 
-  const response = await fetch(`${h.base}/authorize/cancel`, form({ pending }));
+  const response = await browser.post('/consent/deny', { pending: login.pending, csrf: login.csrf });
   const location = new URL(response.headers.get('location') ?? '');
 
   assert.equal(location.searchParams.get('error'), 'access_denied');
@@ -314,15 +320,11 @@ test('cancelling returns access_denied and mints no code', async () => {
 });
 
 test('the consent screen names the client and never echoes markup', async () => {
-  const clientId = await sharedClient(h.base);
-  const page = await fetch(authorizeUrl(h.base, {
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    code_challenge: pkcePair().challenge, code_challenge_method: 'S256'
-  })).then((r) => r.text());
+  const { html } = await openConsent(new Browser(h.base));
 
-  assert.match(page, /127\.0\.0\.1:41234/, 'the consent screen identifies the client');
-  assert.match(page, /Switch your devices on and off/, 'scopes are described in plain words');
-  assert.doesNotMatch(page, /<script/i);
+  assert.match(html, /127\.0\.0\.1:41234/, 'the consent screen identifies the client');
+  assert.match(html, /Switch your devices on and off/, 'scopes are described in plain words');
+  assert.doesNotMatch(html, /<script/i);
 });
 
 /* ---------------------------------------------------------------- refresh */
@@ -505,18 +507,9 @@ test('registration evicts abandoned clients instead of locking out forever', asy
 });
 
 test('two submissions of one authorization yield at most one code', async () => {
-  const clientId = await sharedClient(h.base);
-  const { challenge } = pkcePair();
-  const page = await fetch(authorizeUrl(h.base, {
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256'
-  })).then((r) => r.text());
-  const pending = pendingIdFrom(page)!;
-
-  const username = `race${Date.now()}`;
-  const submit = () => fetch(`${h.base}/authorize`, form({
-    pending, mode: 'signup', username, password: 'correct horse battery staple'
-  }));
+  const browser = new Browser(h.base);
+  const consent = await openConsent(browser);
+  const submit = () => browser.post('/consent', { pending: consent.pending, csrf: consent.csrf });
 
   const [a, b] = await Promise.all([submit(), submit()]);
   const codes = [a, b]
@@ -527,16 +520,17 @@ test('two submissions of one authorization yield at most one code', async () => 
   assert.equal(codes.length, 1, 'claiming and minting are one transaction');
 });
 
-
 test('DCR consent names the selected callback rather than the first registered host', async () => {
   const clientId = await registerClient(h.base, ['https://chatgpt.com/callback', 'https://attacker.example/callback']);
-  const page = await fetch(authorizeUrl(h.base, {
+  const outcome = await walkAuthorization(new Browser(h.base), {
     client_id: clientId, redirect_uri: 'https://attacker.example/callback', response_type: 'code',
     code_challenge: pkcePair().challenge, code_challenge_method: 'S256'
-  })).then(r => r.text());
-  assert.ok(pendingIdFrom(page));
-  assert.match(page, /<span class="host">attacker\.example<\/span>/);
-  assert.doesNotMatch(page, /chatgpt\.com/);
+  }, { mode: 'signup', username: `dcr${Date.now()}` }, { approve: false });
+
+  assert.ok(pendingIdFrom(outcome.html), 'stopped on the consent page');
+  assert.match(outcome.html, /<span class="host">attacker\.example<\/span>/);
+  assert.match(outcome.html, /https:\/\/attacker\.example\/callback/, 'the full destination is shown');
+  assert.doesNotMatch(outcome.html, /chatgpt\.com/);
 });
 
 /* ------------------------------------------------------- page hardening */
@@ -553,50 +547,39 @@ test('authorization pages cannot be framed', async () => {
   // RFC 9700 section 4.16: the page where credentials are typed must not
   // render inside another site's frame. Every HTML response is checked,
   // including the error pages and a re-rendered failed login.
-  const clientId = await sharedClient(h.base);
-  const { challenge } = pkcePair();
-  const page = await fetch(authorizeUrl(h.base, {
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256'
-  }));
-  assertUnframeable(page, 'login page');
-  const pending = pendingIdFrom(await page.text());
+  const browser = new Browser(h.base);
+  const login = await openLogin(browser);
+  assertUnframeable(login.response, 'login page');
 
-  const failed = await fetch(`${h.base}/authorize`, form({
-    pending: pending ?? undefined, mode: 'login', username: 'nobody-here', password: 'wrong password entirely'
-  }));
+  const failed = await browser.post('/login', {
+    pending: login.pending, csrf: login.csrf, mode: 'login', username: 'nobody-here', password: 'wrong password entirely'
+  });
   assertUnframeable(failed, 'failed login');
 
+  const consent = await openConsent(new Browser(h.base));
+  assertUnframeable(consent.response, 'consent page');
+
   assertUnframeable(await fetch(authorizeUrl(h.base, { client_id: 'client_unknown' })), 'unknown client');
-  assertUnframeable(await fetch(`${h.base}/authorize?pending=pa_missing`), 'expired link');
-  assertUnframeable(await fetch(`${h.base}/authorize/cancel`, form({ pending: 'pa_missing' })), 'cancel error');
+  assertUnframeable(await fetch(`${h.base}/login?pending=pa_missing`), 'expired link');
+  assertUnframeable(await fetch(`${h.base}/consent/deny`, form({ pending: 'pa_missing' })), 'deny error');
 });
 
 test('the login form may redirect to the client it was issued for, and nowhere else', async () => {
   // Browsers apply form-action to the redirect that follows a form POST, so
   // 'self' alone would block the 302 back to the host's callback.
-  const clientId = await sharedClient(h.base);
-  const { challenge } = pkcePair();
-  const page = await fetch(authorizeUrl(h.base, {
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256'
-  }));
-  const csp = page.headers.get('content-security-policy') ?? '';
-  const formAction = csp.split(';').map((d) => d.trim()).find((d) => d.startsWith('form-action'));
-  assert.equal(formAction, `form-action 'self' ${new URL(REDIRECT_URI).origin}`);
+  for (const { response } of [await openLogin(new Browser(h.base)), await openConsent(new Browser(h.base))]) {
+    const csp = response.headers.get('content-security-policy') ?? '';
+    const formAction = csp.split(';').map((d) => d.trim()).find((d) => d.startsWith('form-action'));
+    assert.equal(formAction, `form-action 'self' ${new URL(REDIRECT_URI).origin}`);
+  }
 });
 
 test('the page styles itself only through its nonced stylesheet', async () => {
-  const clientId = await sharedClient(h.base);
-  const { challenge } = pkcePair();
-  const page = await fetch(authorizeUrl(h.base, {
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256'
-  }));
-  const html = await page.text();
-  const nonce = html.match(/<style nonce="([^"]+)">/)?.[1];
-  assert.ok(nonce, 'the stylesheet carries a nonce');
-  assert.match(page.headers.get('content-security-policy') ?? '', new RegExp(`style-src 'nonce-${nonce.replace(/[+/=]/g, '\\$&')}'`));
-  // An inline style attribute is not covered by a nonce and would be blocked.
-  assert.doesNotMatch(html, /\sstyle="/);
+  for (const { response, html } of [await openLogin(new Browser(h.base)), await openConsent(new Browser(h.base))]) {
+    const nonce = html.match(/<style nonce="([^"]+)">/)?.[1];
+    assert.ok(nonce, 'the stylesheet carries a nonce');
+    assert.match(response.headers.get('content-security-policy') ?? '', new RegExp(`style-src 'nonce-${nonce.replace(/[+/=]/g, '\\$&')}'`));
+    // An inline style attribute is not covered by a nonce and would be blocked.
+    assert.doesNotMatch(html, /\sstyle="/);
+  }
 });

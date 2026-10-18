@@ -15,6 +15,7 @@
  * out of the redirect — which is exactly what a human does, minus the typing.
  */
 
+import { signUpAndApprove } from '../lib/sign-in.mjs';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js';
@@ -31,24 +32,7 @@ const check = (label, ok, detail = '') => {
 
 /** Stands in for the browser and the person at it. */
 async function completeAuthorization(authorizationUrl) {
-  const page = await fetch(authorizationUrl).then((r) => r.text());
-  const pending = page.match(/name="pending" value="([^"]+)"/)?.[1];
-  if (!pending) throw new Error('the authorization page did not render a form');
-
-  const redirected = await fetch(`${BASE}/authorize`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      pending, mode: 'signup',
-      username: 'clientcheck' + Date.now().toString(36),
-      password: 'correct horse battery staple'
-    }),
-    redirect: 'manual'
-  });
-
-  const location = redirected.headers.get('location');
-  if (!location) throw new Error(`the page did not redirect (${redirected.status})`);
-  return new URL(location);
+  return signUpAndApprove(authorizationUrl, { username: 'clientcheck' + Date.now().toString(36) });
 }
 
 let authorizationCode = null;
@@ -63,6 +47,9 @@ const provider = {
     return {
       client_name: 'Client conformance check',
       redirect_uris: [REDIRECT],
+      // MCP 2026-07-28 requires DCR clients to send it, and the server refuses
+      // a registration without one.
+      application_type: 'native',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code'],
       token_endpoint_auth_method: 'none'

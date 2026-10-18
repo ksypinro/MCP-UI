@@ -7,7 +7,8 @@
  */
 
 import type { Queryable } from '../db/index.ts';
-import { fingerprint } from './crypto.ts';
+import { wellFormed } from '../tokens/format.ts';
+import { tokenDigestCandidates } from '../tokens/hash.ts';
 import { RESOURCE_URI, type Scope } from './config.ts';
 
 export type VerifiedToken =
@@ -20,7 +21,8 @@ export async function verifyOAuthAccessToken(
   token: string | null | undefined,
   requiredScopes: Scope[] = []
 ): Promise<VerifiedToken> {
-  if (typeof token !== 'string' || token.length === 0) return { ok: false, reason: 'invalid_token' };
+  // Garbage is refused by checksum, without a database round trip.
+  if (!wellFormed('access', token)) return { ok: false, reason: 'invalid_token' };
 
   const { rows } = await db.query<{
     account_id: string; client_id: string; grant_id: string; scope: string; audience: string;
@@ -28,10 +30,10 @@ export async function verifyOAuthAccessToken(
     `SELECT g.account_id, g.client_id, t.grant_id, t.scope, t.audience
        FROM oauth_access_tokens t
        JOIN oauth_grants g ON g.id = t.grant_id
-      WHERE t.token_hash = $1
+      WHERE t.token_hash = ANY($1::text[])
         AND t.expires_at > now()
         AND g.revoked_at IS NULL`,
-    [fingerprint(token)]
+    [tokenDigestCandidates(token)]
   );
 
   const row = rows[0];

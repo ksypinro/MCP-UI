@@ -4,13 +4,15 @@
  * Two mechanisms, in the priority the 2026-07-28 authorization specification
  * sets: Client ID Metadata Documents first, Dynamic Client Registration as a
  * fallback for hosts that do not support CIMD. DCR is deprecated in that
- * revision but retained, and ChatGPT still uses it.
+ * revision and can be removed no earlier than the first revision on or after
+ * 28 July 2027; until then it is kept, hardened, and never trusted.
  */
 
 import { lookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP, type LookupFunction } from 'node:net';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
+import ipaddr from 'ipaddr.js';
 import type { Db, Queryable } from '../db/index.ts';
 import { MAX_REGISTERED_CLIENTS, UNUSED_CLIENT_TTL_SECONDS } from './config.ts';
 import { MemoryBucketStore, bucket } from '../security/rate-limit.ts';
@@ -28,10 +30,33 @@ export interface ResolvedClient {
    * the validated callback selected by this authorization request.
    */
   displayHost: string | null;
+  /** How the client is known. Drives what the consent screen claims about it. */
+  kind: 'cimd' | 'dcr' | 'preregistered';
+  /**
+   * `verified` only for a CIMD URL on our allowlist of known hosts, or a
+   * client we registered ourselves. Everything else is `unverified`.
+   */
+  trust: 'verified' | 'unverified';
+  /**
+   * SHA-256 of the metadata document, for CIMD clients. A remembered consent
+   * is tied to it, so a changed document asks the person again.
+   */
+  documentDigest: string | null;
 }
 
 const CIMD_TIMEOUT_MS = 5_000;
-const CIMD_MAX_BYTES = 64 * 1024;
+/** CIMD draft -02 recommends about 5 KB; a real document is a few hundred bytes. */
+const CIMD_MAX_BYTES = 5 * 1024;
+
+/**
+ * CIMD client_ids we recognise by URL, shown as verified on the consent
+ * screen. Comma-separated KNOWN_CLIENTS overrides the default. Claude's CIMD
+ * URL is added once host-check has confirmed it.
+ */
+function knownClients(): Set<string> {
+  const configured = process.env.KNOWN_CLIENTS ?? 'https://chatgpt.com/oauth/client.json';
+  return new Set(configured.split(',').map((entry) => entry.trim()).filter(Boolean));
+}
 
 /* ------------------------------------------------------------------ SSRF */
 
@@ -40,30 +65,21 @@ const CIMD_MAX_BYTES = 64 * 1024;
  * we fetch it. Without this check that is a request forgery primitive pointed
  * at whatever the server can reach — cloud metadata endpoints being the
  * classic target.
+ *
+ * Only ordinary public unicast is allowed. ipaddr.js classifies everything
+ * else — private, loopback, link-local, carrier-grade NAT, benchmarking and
+ * documentation ranges, multicast, unique-local IPv6, and the IPv6 forms that
+ * embed an IPv4 address (mapped, NAT64, 6to4, Teredo) — so there is no
+ * hand-written parsing left to get wrong. An earlier version checked only the
+ * fe80 prefix of link-local and missed NAT64 entirely.
  */
-function isPrivateAddress(address: string): boolean {
-  if (isIP(address) === 6) {
-    const normalized = address.toLowerCase();
-    if (normalized === '::1' || normalized === '::') return true;
-    if (normalized.startsWith('fe80') || normalized.startsWith('fc') || normalized.startsWith('fd')) {
-      return true;
-    }
-    // IPv4-mapped, e.g. ::ffff:169.254.169.254
-    const mapped = normalized.match(/::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-    return mapped?.[1] ? isPrivateAddress(mapped[1]) : false;
+export function isForbiddenAddress(address: string): boolean {
+  if (!ipaddr.isValid(address)) return true;
+  let parsed = ipaddr.parse(address);
+  if (parsed.kind() === 'ipv6' && (parsed as ipaddr.IPv6).isIPv4MappedAddress()) {
+    parsed = (parsed as ipaddr.IPv6).toIPv4Address();
   }
-
-  const parts = address.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part))) return true;
-  const [a = 0, b = 0] = parts;
-
-  if (a === 10 || a === 127 || a === 0) return true;
-  if (a === 172 && b >= 16 && b <= 31) return true;
-  if (a === 192 && b === 168) return true;
-  if (a === 169 && b === 254) return true;       // link-local, incl. 169.254.169.254
-  if (a === 100 && b >= 64 && b <= 127) return true; // carrier-grade NAT
-  if (a >= 224) return true;                      // multicast and reserved
-  return false;
+  return parsed.range() !== 'unicast';
 }
 
 /**
@@ -80,7 +96,7 @@ async function resolvePinnedAddress(
   hostname: string
 ): Promise<{ address: string; family: number } | null> {
   if (isIP(hostname)) {
-    return isPrivateAddress(hostname)
+    return isForbiddenAddress(hostname)
       ? null
       : { address: hostname, family: isIP(hostname) };
   }
@@ -89,7 +105,7 @@ async function resolvePinnedAddress(
     if (addresses.length === 0) return null;
     // Every address must be public: a name resolving to both is still a way
     // to reach the private one.
-    if (addresses.some((entry) => isPrivateAddress(entry.address))) return null;
+    if (addresses.some((entry) => isForbiddenAddress(entry.address))) return null;
     const chosen = addresses[0];
     return chosen ? { address: chosen.address, family: chosen.family } : null;
   } catch {
@@ -111,7 +127,7 @@ export function pinnedLookup(pinned: { address: string; family: number }): Looku
  */
 function fetchPinned(
   url: URL, pinned: { address: string; family: number }
-): Promise<{ status: number; body: string } | null> {
+): Promise<FetchedDocument | null> {
   return new Promise((resolve) => {
     const req = httpsRequest(
       {
@@ -136,19 +152,24 @@ function fetchPinned(
           resolve(null);
           return;
         }
-        let body = '';
+        // Counted in bytes, not decoded characters, so multi-byte text cannot
+        // stretch the cap.
+        const chunks: Buffer[] = [];
         let size = 0;
-        response.setEncoding('utf8');
-        response.on('data', (chunk: string) => {
+        response.on('data', (chunk: Buffer) => {
           size += chunk.length;
           if (size > CIMD_MAX_BYTES) {
             response.destroy();
             resolve(null);
             return;
           }
-          body += chunk;
+          chunks.push(chunk);
         });
-        response.on('end', () => resolve({ status, body }));
+        response.on('end', () => resolve({
+          status,
+          cacheControl: typeof response.headers['cache-control'] === 'string' ? response.headers['cache-control'] : null,
+          body: Buffer.concat(chunks).toString('utf8')
+        }));
         response.on('error', () => resolve(null));
       }
     );
@@ -176,70 +197,78 @@ export async function cimdFetchAllowed(host: string): Promise<boolean> {
   return (await takeCimdFetch(`cimd-host:${host.toLowerCase()}`)).ok;
 }
 
-/**
- * Resolved documents, kept briefly so the fetch budget above does not throttle
- * a popular host whose users all sign in at once. Positive results only: a
- * failure is not remembered, so a fixed document is picked up on the next try.
- */
-export class CimdCache {
-  private readonly entries = new Map<string, { client: ResolvedClient; expiresAt: number }>();
-  private readonly ttlMs: number;
-  private readonly maxEntries: number;
-  private readonly now: () => number;
-
-  constructor(options: { ttlMs: number; maxEntries: number; now?: () => number }) {
-    this.ttlMs = options.ttlMs;
-    this.maxEntries = options.maxEntries;
-    this.now = options.now ?? Date.now;
-  }
-
-  get(clientId: string): ResolvedClient | null {
-    const entry = this.entries.get(clientId);
-    if (!entry) return null;
-    if (entry.expiresAt <= this.now()) {
-      this.entries.delete(clientId);
-      return null;
-    }
-    return entry.client;
-  }
-
-  set(clientId: string, client: ResolvedClient): void {
-    if (this.entries.size >= this.maxEntries) {
-      // Oldest insertion first; Map preserves insertion order.
-      const oldest = this.entries.keys().next().value;
-      if (oldest !== undefined) this.entries.delete(oldest);
-    }
-    this.entries.set(clientId, { client, expiresAt: this.now() + this.ttlMs });
-  }
-}
-
-const cimdCache = new CimdCache({ ttlMs: 5 * 60_000, maxEntries: 1000 });
-
 interface ClientIdMetadataDocument {
   client_id?: unknown;
   client_name?: unknown;
   redirect_uris?: unknown;
 }
 
-async function resolveMetadataDocument(clientId: string): Promise<ResolvedClient | null> {
+export interface FetchedDocument {
+  status: number;
+  cacheControl: string | null;
+  body: string;
+}
+
+/** How a metadata document is fetched. Replaced in tests; see resolveClient. */
+export type CimdFetcher = (url: URL) => Promise<FetchedDocument | null>;
+
+/** The real fetcher: resolve, refuse forbidden addresses, connect to the checked one. */
+const pinnedFetcher: CimdFetcher = async (url) => {
+  const pinned = await resolvePinnedAddress(url.hostname);
+  return pinned ? fetchPinned(url, pinned) : null;
+};
+
+/**
+ * How long a fetched document may be reused: the document's own max-age,
+ * clamped to between one minute and a day, or five minutes when it says
+ * nothing. `no-store` and `no-cache` are honoured by not caching.
+ */
+export function cimdCacheSeconds(cacheControl: string | null): number {
+  if (!cacheControl) return 300;
+  if (/\bno-(store|cache)\b/i.test(cacheControl)) return 0;
+  const maxAge = /\bmax-age=(\d+)/i.exec(cacheControl)?.[1];
+  if (maxAge === undefined) return 300;
+  return Math.min(Math.max(Number(maxAge), 60), 86_400);
+}
+
+async function cachedDocument(db: Queryable, clientId: string): Promise<ResolvedClient | null> {
+  const { rows } = await db.query<{ redirect_uris: string; display_host: string; digest: string }>(
+    'SELECT redirect_uris, display_host, digest FROM cimd_cache WHERE client_id = $1 AND expires_at > now()',
+    [clientId]
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    clientId,
+    redirectUris: JSON.parse(row.redirect_uris) as string[],
+    displayHost: row.display_host,
+    kind: 'cimd',
+    trust: knownClients().has(clientId) ? 'verified' : 'unverified',
+    documentDigest: row.digest
+  };
+}
+
+async function resolveMetadataDocument(
+  db: Queryable, clientId: string, fetcher: CimdFetcher
+): Promise<ResolvedClient | null> {
   let url: URL;
   try {
     url = new URL(clientId);
   } catch {
     return null;
   }
-  if (url.protocol !== 'https:') return null;
+  if (url.protocol !== 'https:' || url.hash) return null;
 
-  const cached = cimdCache.get(clientId);
+  // Successful documents are reused across sign-ins and restarts, so the
+  // per-host budget below never bites a popular host's legitimate users.
+  const cached = await cachedDocument(db, clientId);
   if (cached) return cached;
   if (!(await cimdFetchAllowed(url.host))) return null;
 
-  const pinned = await resolvePinnedAddress(url.hostname);
-  if (!pinned) return null;
-
   try {
-    const response = await fetchPinned(url, pinned);
+    const response = await fetcher(url);
     if (!response || response.status < 200 || response.status >= 300) return null;
+    if (Buffer.byteLength(response.body, 'utf8') > CIMD_MAX_BYTES) return null;
 
     const document = JSON.parse(response.body) as ClientIdMetadataDocument;
 
@@ -252,9 +281,27 @@ async function resolveMetadataDocument(clientId: string): Promise<ResolvedClient
       : [];
     if (redirectUris.length === 0) return null;
 
-    const client = { clientId, redirectUris, displayHost: url.host };
-    cimdCache.set(clientId, client);
-    return client;
+    const digest = createHash('sha256').update(response.body).digest('hex');
+    const ttl = cimdCacheSeconds(response.cacheControl);
+    if (ttl > 0) {
+      await db.query(
+        `INSERT INTO cimd_cache (client_id, redirect_uris, display_host, digest, fetched_at, expires_at)
+         VALUES ($1, $2, $3, $4, now(), now() + make_interval(secs => $5))
+         ON CONFLICT (client_id) DO UPDATE
+           SET redirect_uris = EXCLUDED.redirect_uris, display_host = EXCLUDED.display_host,
+               digest = EXCLUDED.digest, fetched_at = EXCLUDED.fetched_at, expires_at = EXCLUDED.expires_at`,
+        [clientId, JSON.stringify(redirectUris), url.host, digest, ttl]
+      );
+    }
+
+    return {
+      clientId,
+      redirectUris,
+      displayHost: url.host,
+      kind: 'cimd',
+      trust: knownClients().has(clientId) ? 'verified' : 'unverified',
+      documentDigest: digest
+    };
   } catch {
     return null;
   }
@@ -262,13 +309,45 @@ async function resolveMetadataDocument(clientId: string): Promise<ResolvedClient
 
 /* ------------------------------------------------------------------- DCR */
 
-export async function registerClient(
-  db: Db,
-  redirectUris: string[],
-  clientName: string | undefined
-): Promise<{ clientId: string } | { error: string }> {
-  const valid = redirectUris.filter(isRegisterableRedirectUri);
-  if (valid.length === 0) return { error: 'invalid_redirect_uri' };
+export interface ClientRegistration {
+  redirectUris: unknown;
+  clientName: unknown;
+  applicationType: unknown;
+}
+
+export type RegistrationOutcome =
+  | { clientId: string; redirectUris: string[]; clientName: string | null; applicationType: 'web' | 'native' }
+  | { error: 'invalid_redirect_uri' | 'invalid_client_metadata' | 'registration_closed' };
+
+/**
+ * Dynamic Client Registration (RFC 7591), deprecated by MCP 2026-07-28 and
+ * kept, hardened, until it can be removed.
+ *
+ * - `application_type` is required, as 2026-07-28 requires clients to send
+ *   it, and constrains redirects the way OpenID Connect does: `web` clients
+ *   use https on a non-loopback host; `native` clients use loopback http, a
+ *   reverse-DNS private-use scheme, or https.
+ * - One unacceptable redirect URI refuses the whole registration. Silently
+ *   dropping it would register something other than what was asked for.
+ * - The name is length-limited and stripped of control characters, and
+ *   nothing the client sent is echoed back unvalidated.
+ * - Every DCR client is unverified, and consent is never remembered for it.
+ */
+export async function registerClient(db: Db, registration: ClientRegistration): Promise<RegistrationOutcome> {
+  const applicationType = registration.applicationType;
+  if (applicationType !== 'web' && applicationType !== 'native') return { error: 'invalid_client_metadata' };
+
+  const redirectUris = Array.isArray(registration.redirectUris) ? registration.redirectUris : [];
+  if (redirectUris.length === 0 || redirectUris.length > 10) return { error: 'invalid_redirect_uri' };
+  for (const uri of redirectUris) {
+    if (typeof uri !== 'string' || !isRegisterableRedirectUri(uri)) return { error: 'invalid_redirect_uri' };
+    if (!suitsApplicationType(uri, applicationType)) return { error: 'invalid_redirect_uri' };
+  }
+  const uris = redirectUris as string[];
+
+  const clientName = typeof registration.clientName === 'string'
+    ? registration.clientName.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 100) || null
+    : null;
 
   // Evict before counting. A client that registered and never authorized is
   // either an abandoned experiment or noise; a real one has a grant within
@@ -280,11 +359,17 @@ export async function registerClient(
 
   const clientId = `client_${randomBytes(16).toString('base64url')}`;
   await db.query(
-    `INSERT INTO oauth_clients (client_id, client_name, redirect_uris, source)
-     VALUES ($1, $2, $3, 'dcr')`,
-    [clientId, clientName ?? null, JSON.stringify(valid)]
+    `INSERT INTO oauth_clients (client_id, client_name, redirect_uris, source, application_type)
+     VALUES ($1, $2, $3, 'dcr', $4)`,
+    [clientId, clientName, JSON.stringify(uris), applicationType]
   );
-  return { clientId };
+  return { clientId, redirectUris: uris, clientName, applicationType };
+}
+
+function suitsApplicationType(uri: string, applicationType: 'web' | 'native'): boolean {
+  const url = new URL(uri);
+  if (applicationType === 'web') return url.protocol === 'https:' && !isLoopback(url);
+  return true; // native: loopback http, private-use scheme or https, all already checked
 }
 
 /**
@@ -329,8 +414,8 @@ export async function evictUnusedClients(db: Queryable): Promise<number> {
 }
 
 async function resolveRegisteredClient(db: Queryable, clientId: string): Promise<ResolvedClient | null> {
-  const { rows } = await db.query<{ client_id: string; redirect_uris: string }>(
-    'SELECT client_id, redirect_uris FROM oauth_clients WHERE client_id = $1',
+  const { rows } = await db.query<{ client_id: string; redirect_uris: string; source: string }>(
+    'SELECT client_id, redirect_uris, source FROM oauth_clients WHERE client_id = $1',
     [clientId]
   );
   const row = rows[0];
@@ -340,13 +425,28 @@ async function resolveRegisteredClient(db: Queryable, clientId: string): Promise
   // DCR does not establish ownership of a name or of the first registered
   // URI. The authorization endpoint must display the validated destination
   // actually selected for this request.
-  return { clientId, redirectUris, displayHost: null };
+  const preregistered = row.source === 'preregistered';
+  return {
+    clientId,
+    redirectUris,
+    displayHost: null,
+    kind: preregistered ? 'preregistered' : 'dcr',
+    trust: preregistered ? 'verified' : 'unverified',
+    documentDigest: null
+  };
 }
 
-/** CIMD when the id is an HTTPS URL, otherwise a registered client. */
-export async function resolveClient(db: Queryable, clientId: unknown): Promise<ResolvedClient | null> {
+/**
+ * CIMD when the id is an HTTPS URL, otherwise a registered client.
+ *
+ * `fetcher` exists for tests, which cannot serve a document from a public
+ * address; production always uses the pinned fetcher.
+ */
+export async function resolveClient(
+  db: Queryable, clientId: unknown, options: { fetcher?: CimdFetcher } = {}
+): Promise<ResolvedClient | null> {
   if (typeof clientId !== 'string' || clientId.length === 0 || clientId.length > 2048) return null;
-  if (clientId.startsWith('https://')) return resolveMetadataDocument(clientId);
+  if (clientId.startsWith('https://')) return resolveMetadataDocument(db, clientId, options.fetcher ?? pinnedFetcher);
   return resolveRegisteredClient(db, clientId);
 }
 

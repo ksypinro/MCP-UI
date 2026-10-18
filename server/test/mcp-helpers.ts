@@ -1,7 +1,5 @@
-import { createHash, randomBytes } from 'node:crypto';
 import {
-  REDIRECT_URI, authorizeAs, exchange, form, json, pendingIdFrom, registerClient,
-  type Harness
+  authorizeAs, exchange, registerClient, type Harness
 } from './oauth-helpers.ts';
 
 export interface RpcResponse {
@@ -73,29 +71,8 @@ export async function tokenForExisting(
   h: Harness, username: string, scope: string
 ): Promise<string> {
   const clientId = await registerClient(h.base);
-  const verifier = randomBytes(32).toString('base64url');
-  const challenge = createHash('sha256').update(verifier).digest('base64url');
-
-  const page = await fetch(`${h.base}/authorize?` + new URLSearchParams({
-    client_id: clientId, redirect_uri: REDIRECT_URI, response_type: 'code',
-    code_challenge: challenge, code_challenge_method: 'S256', scope
-  })).then((r) => r.text());
-  const pending = pendingIdFrom(page);
-  if (!pending) throw new Error('authorize did not render a form');
-
-  const redirected = await fetch(`${h.base}/authorize`, form({
-    pending, mode: 'login', username, password: 'correct horse battery staple'
-  }));
-  const location = redirected.headers.get('location');
-  if (!location) throw new Error(`login did not redirect (${redirected.status})`);
-  const code = new URL(location).searchParams.get('code');
-  if (!code) throw new Error('no code in redirect');
-
-  const body = await fetch(`${h.base}/token`, json({
-    grant_type: 'authorization_code', code, code_verifier: verifier,
-    redirect_uri: REDIRECT_URI, client_id: clientId
-  })).then((r) => r.json()) as Record<string, string>;
-
+  const authorization = await authorizeAs(h.base, { clientId, username, scope, mode: 'login' });
+  const { body } = await exchange(h.base, authorization);
   if (!body.access_token) throw new Error(`no token: ${JSON.stringify(body)}`);
   return body.access_token;
 }

@@ -1,6 +1,6 @@
 # Testing and verification
 
-227 automated tests, plus three harnesses for the things tests cannot reach.
+252 automated tests, plus three harnesses for the things tests cannot reach.
 This document explains what each layer proves — and, as importantly, what it
 does not.
 
@@ -10,9 +10,9 @@ does not.
 
 | | Count | Command | What it establishes |
 | --- | --- | --- | --- |
-| Server | 178 | `npm test` | Domain rules, HTTP contract, OAuth, MCP protocol, views |
+| Server | 203 | `npm test` | Domain rules, HTTP contract, OAuth, MCP protocol, views |
 | iOS | 49 | `xcodebuild … test` | View-model state machines, session lifecycle, transport |
-| Acceptance | 30 criteria | `npm run acceptance` | Which of §12 (and two redesign criteria) the suites actually establish |
+| Acceptance | 33 criteria | `npm run acceptance` | Which of §12 (and five redesign criteria) the suites actually establish |
 | Client conformance | 18 checks | `npm run client-check` | That a compliant MCP client can find its way through |
 | Host readiness | 9 checks | `npm run host-check` | That everything failable without a host has already failed |
 | Views | manual | `node tools/mock-host/run.mjs` | What a view looks like and does |
@@ -24,7 +24,7 @@ does not.
 ```bash
 cd server
 npm install
-npm test                                   # 178
+npm test                                   # 203
 npm run typecheck
 npm run acceptance                         # the criteria map
 
@@ -50,13 +50,17 @@ to WebAssembly, so there is no database to provision.
 | `auth.test.ts` | 13 | Hashing, rotation, reuse detection, revocation |
 | `mcp-bridge.test.ts` | 13 | The shared bridge, in a vm, including origin pinning |
 | `concurrency.test.ts` | 7 | AC-09 and AC-10 |
-| `oauth-clients.test.ts` | 6 | CIMD, SSRF refusals, redirect rules |
+| `oauth-clients.test.ts` | 11 | CIMD, SSRF refusals by address range, document caching, DCR strictness |
 | `normalize.test.ts` | 5 | The folds |
 | `persistence.test.ts` | 1 | Survival across a restart |
 | `oauth-refresh.test.ts` | 6 | Concurrent refresh, the grace window, theft, single-use codes |
 | `chatgpt-challenge.test.ts` | 5 | The tool-level challenge and `securitySchemes` |
 | `mcp-limits.test.ts` | 3 | Limits keyed by address until a token verifies, then by grant |
-| `oauth-limits.test.ts` | 3 | Authorization page views, CIMD fetch budget and cache |
+| `oauth-limits.test.ts` | 3 | Authorization page views, CIMD fetch budget, document cache lifetimes |
+| `consent.test.ts` | 11 | Remembered consent, re-authentication, browser binding, CSRF, sessions, `offline_access` |
+| `tokens.test.ts` | 4 | Token format, keyed-hash storage, pepper rotation |
+| `hosts.test.ts` | 3 | Each surface answers only on its own origin |
+| `password.test.ts` | 2 | Peppered Argon2id, upgrade of older hashes |
 
 ---
 
@@ -67,7 +71,7 @@ npm run acceptance
 ```
 
 ```
-21 proven, 6 partial, 3 open   (178 tests ran, 178 passed)
+24 proven, 6 partial, 3 open   (203 tests ran, 203 passed)
 ```
 
 It maps each criterion in §12 to the tests that establish it. Evidence is
