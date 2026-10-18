@@ -39,7 +39,7 @@ express.urlencoded()            the hosted login form; OAuth is form-encoded
 GET /healthz
 oauthRoutes(db)                 mounted at root — .well-known paths cannot move
 mcpRoutes(db)                   /mcp
-authRoutes(db)                  /v1/auth/*
+authRoutes(db)                  /v1/auth/* (sign-up, log-in, refresh deprecated)
 deviceRoutes(db)                /v1/devices*
 notFound()
 errorHandler({ jsonRpcPaths })  the single place an error becomes a response

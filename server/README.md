@@ -11,7 +11,7 @@ adapter will call the same device service directly rather than over HTTP.
 ```bash
 npm install
 npm start          # http://localhost:4000
-npm test           # 53 tests
+npm test           # 238 tests
 npm run typecheck
 ```
 
@@ -175,7 +175,7 @@ the caller's token for an internal one before calling the Device Service
   `https://device.internal`, exactly one scope, `act` naming the adapter and
   `cnf` binding it to that adapter's workload identity. The MCP adapter may
   exchange only OAuth tokens for the MCP resource; the REST gateway only
-  first-party sessions. Tokens are cached per grant and scope, and dropped
+  the app's OAuth tokens for the API, or a legacy first-party session. Tokens are cached per grant and scope, and dropped
   the moment the grant is revoked.
 - **Verify everything.** The Device Service checks signature, `typ: at+jwt`,
   issuer, audience, expiry, the scope the operation needs, and that the token
@@ -193,6 +193,46 @@ the caller's token for an internal one before calling the Device Service
 While everything runs in one process, a workload identity is a capability
 object created at start-up; when the components are split, it becomes the
 adapter's mTLS certificate.
+
+## The iOS app's sign-in: PAR and DPoP
+
+The app is an OAuth client like the hosts, with three things the hosts are
+not required to do. All three are enforced for `client_id=iot-switch-ios`,
+which is resolved in code rather than registered, and ignored for everyone
+else.
+
+- **Pushed authorization requests** (RFC 9126). The app posts its whole
+  request to `POST /par` and gets back a `request_uri` that works once, within
+  60 seconds. The browser sheet opens `/authorize?client_id&request_uri`, so
+  nothing in the URL can be altered on the way. `/authorize` refuses this
+  client without one. `prompt=create` opens the sign-up form.
+- **DPoP** (RFC 9449, `oauth/dpop.ts`). The request names the thumbprint of a
+  key held in the Secure Enclave (`dpop_jkt`); the code is redeemable only with
+  a proof from that key, and the tokens it yields carry it (`cnf_jkt`). Every
+  API call then needs a fresh proof naming the method and URL, hashing the
+  token (`ath`) and echoing a server nonce. A copied token, a replayed proof,
+  or a proof from another key gets `401` with `WWW-Authenticate: DPoP`.
+  Nonces are an HMAC of the five-minute window, so they need no storage and
+  survive restarts; every token response and API answer carries the current
+  one in `DPoP-Nonce`.
+- **Its own audience.** The app's tokens are for the REST API
+  (`API_BASE_URL`), last 10 minutes, and skip the consent screen. A refresh
+  needs a proof from the same key, so a stolen refresh token is as useless as
+  a stolen access token.
+
+Hosts that send a DPoP proof get bound tokens too, at `/mcp` as well as the
+API. Nothing requires them to.
+
+The old password endpoints under `/v1/auth/*` still answer, now with
+`Deprecation` and `Sunset` headers. `LEGACY_FIRST_PARTY_AUTH=off` retires
+sign-up, log-in and refresh with `410`; `DPOP_REQUIRED_FOR_API=on` refuses
+anything at the API that is not DPoP-bound. Both are for after the browser
+sign-in build has shipped.
+
+`/.well-known/apple-app-site-association` is served on the API host once
+`APPLE_TEAM_ID` is set, for the universal-link callback that replaces the
+custom scheme. `/oauth/callback` there is a page that tells a person who
+lands on it in a browser to go back to the app, and never shows the code.
 
 ## The MCP App views
 
@@ -245,9 +285,10 @@ unit test passed straight over.
 npm run acceptance
 ```
 
-Runs the suite and reports which of the 37 criteria — the 28 in section 12 of
-`../requirement.md`, plus nine added by the authentication redesign — it establishes, which are only partly established, and
-which cannot be established from here at all.
+Runs the suite and reports which of the 42 criteria — the 28 in section 12 of
+`../requirement.md`, plus fourteen added by the authentication redesign — it
+establishes, which are only partly established, and which cannot be
+established from here at all.
 
 It fails if a criterion's evidence goes missing, becomes ambiguous, or starts
 failing, so renaming a test drops its criterion loudly rather than quietly.

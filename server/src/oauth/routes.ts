@@ -33,6 +33,7 @@ export function oauthRoutes(db: Db): Router {
   // fetch a client metadata document. Bounded by address for those reasons.
   const viewsPerMinute = Number(process.env.AUTHORIZE_VIEW_RATE_LIMIT_PER_MINUTE ?? 60);
   router.get('/authorize', rateLimit(viewsPerMinute, 60_000, (req) => `authorize-view:${req.ip ?? 'unknown'}`));
+  router.post('/par', rateLimit(viewsPerMinute, 60_000, (req) => `par:${req.ip ?? 'unknown'}`));
 
   router.use(authorizeRoutes(db));
   router.use(tokenRoutes(db));

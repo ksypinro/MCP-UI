@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { ISSUER, RESOURCE_URI, SCOPES_SUPPORTED } from './config.ts';
+import { DPOP_ALGORITHMS, ISSUER, RESOURCE_URI, SCOPES_SUPPORTED } from './config.ts';
 
 /**
  * Discovery documents. A host follows exactly this chain: 401 names the
@@ -16,7 +16,11 @@ function protectedResourceMetadata() {
     resource: RESOURCE_URI,
     authorization_servers: [ISSUER],
     scopes_supported: SCOPES_SUPPORTED,
-    bearer_methods_supported: ['header']
+    bearer_methods_supported: ['header'],
+    // DPoP is accepted from any host that offers it, and not required: no
+    // major host is known to send it yet.
+    dpop_signing_alg_values_supported: DPOP_ALGORITHMS,
+    dpop_bound_access_tokens_required: false
   };
 }
 
@@ -36,6 +40,7 @@ metadataRouter.get('/.well-known/oauth-authorization-server', (_req, res) => {
     authorization_endpoint: `${ISSUER}/authorize`,
     token_endpoint: `${ISSUER}/token`,
     revocation_endpoint: `${ISSUER}/revoke`,
+    pushed_authorization_request_endpoint: `${ISSUER}/par`,
     jwks_uri: `${ISSUER}/.well-known/jwks.json`,
     registration_endpoint: `${ISSUER}/register`,
     scopes_supported: SCOPES_SUPPORTED,
@@ -51,6 +56,7 @@ metadataRouter.get('/.well-known/oauth-authorization-server', (_req, res) => {
     // RFC 9207. Advertising this is what tells a client to reject an
     // authorization response that arrives without an iss.
     authorization_response_iss_parameter_supported: true,
+    dpop_signing_alg_values_supported: DPOP_ALGORITHMS,
     revocation_endpoint_auth_methods_supported: ['none']
   });
 });

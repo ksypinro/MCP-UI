@@ -1,4 +1,4 @@
-import { AUTH_BASE_URL, MCP_BASE_URL } from '../config.ts';
+import { API_BASE_URL, AUTH_BASE_URL, MCP_BASE_URL } from '../config.ts';
 
 /**
  * The permissions from spec section 7.3.
@@ -55,9 +55,47 @@ export const ISSUER = AUTH_BASE_URL;
  */
 export const RESOURCE_URI = `${MCP_BASE_URL}/mcp`;
 
+/**
+ * The REST API as a protected resource: the audience of the first-party
+ * app's tokens. Kept distinct from RESOURCE_URI so a token for one is never
+ * accepted by the other.
+ */
+export const API_RESOURCE = API_BASE_URL;
+
+/**
+ * The first-party iOS app, as an OAuth client.
+ *
+ * Defined here rather than registered at run time: it is ours, its redirect
+ * URIs are configuration, and it is the one client that skips the consent
+ * screen and must use PAR and DPoP. Its callbacks are a universal link on the
+ * API host (once an Apple team is configured) and a reverse-DNS private-use
+ * scheme for development; PKCE plus a DPoP key bound at PAR time make a code
+ * intercepted through the latter useless. The scheme is lower case because
+ * URL schemes are case-insensitive and are normalised to lower case in
+ * transit; comparing a mixed-case one exactly would fail.
+ */
+export const FIRST_PARTY_CLIENT_ID = 'iot-switch-ios';
+
+export function firstPartyRedirectUris(): string[] {
+  const configured = process.env.FIRST_PARTY_REDIRECT_URIS
+    ?? `com.example.iotswitch:/oauth/callback,${API_BASE_URL}/oauth/callback`;
+  return configured.split(',').map((entry) => entry.trim()).filter(Boolean);
+}
+
+/** The DPoP signature algorithms accepted (RFC 9449). */
+export const DPOP_ALGORITHMS = ['ES256', 'EdDSA'] as const;
+
+/** Pushed authorization requests live this long (RFC 9126). */
+export const PAR_TTL_SECONDS = 60;
+
 export const AUTHORIZATION_CODE_TTL_SECONDS = 60;
 export const PENDING_AUTHORIZATION_TTL_SECONDS = 15 * 60;
 export const OAUTH_ACCESS_TOKEN_TTL_SECONDS = 3600;
+/**
+ * The iOS app's access tokens (token N): short, because the app refreshes
+ * cheaply and holds them only in memory. Architecture section 7.
+ */
+export const NATIVE_ACCESS_TOKEN_TTL_SECONDS = Number(process.env.NATIVE_ACCESS_TOKEN_TTL_SECONDS ?? 600);
 export const OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 3600;
 
 /**

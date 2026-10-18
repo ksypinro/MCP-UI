@@ -21,13 +21,12 @@ import { AppError } from '../errors.ts';
 import { keys } from '../security/keys.ts';
 import { workloadUri, type Workload } from '../security/workload.ts';
 import { verifyAccessToken } from '../domain/sessions.ts';
-import { ISSUER, type Scope } from './config.ts';
+import { API_RESOURCE, FIRST_PARTY_CLIENT_ID, ISSUER, type Scope } from './config.ts';
 import { verifyOAuthAccessToken } from './verify.ts';
 
 export const INTERNAL_AUDIENCE = 'https://device.internal';
 export const INTERNAL_TOKEN_TTL_SECONDS = 60;
-/** The client the first-party app is recorded as. */
-export const FIRST_PARTY_CLIENT_ID = 'iot-switch-ios';
+export { FIRST_PARTY_CLIENT_ID } from './config.ts';
 
 export interface ExchangeRequest {
   workload: Workload;
@@ -57,7 +56,9 @@ interface Subject {
  *
  * The MCP adapter exchanges only OAuth access tokens issued for the MCP
  * resource, and only for a scope the token already holds. The REST gateway
- * exchanges only first-party session tokens. Neither may present the other's.
+ * exchanges only the app's credentials: OAuth tokens issued for the REST API,
+ * or (until they are retired) first-party sessions. Neither may present the
+ * other's.
  */
 async function resolveSubject(db: Queryable, request: ExchangeRequest): Promise<Subject> {
   if (request.workload.name === 'mcp-rs') {
@@ -73,6 +74,17 @@ async function resolveSubject(db: Queryable, request: ExchangeRequest): Promise<
     };
   }
 
+  // The app's OAuth token, audience the REST API.
+  const oauth = await verifyOAuthAccessToken(db, request.subjectToken, [request.scope], { audience: API_RESOURCE });
+  if (oauth.ok) {
+    return {
+      accountId: oauth.accountId, clientId: oauth.clientId, grantId: oauth.grantId,
+      channel: 'native', authMethod: oauth.cnfJkt ? 'oauth-dpop' : 'oauth', expiresIn: oauth.expiresIn
+    };
+  }
+  if (oauth.reason === 'insufficient_scope') throw new AppError('INSUFFICIENT_SCOPE');
+
+  // A legacy first-party session.
   const session = await verifyAccessToken(db, request.subjectToken);
   if (!session) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
   // A first-party session holds every device scope.

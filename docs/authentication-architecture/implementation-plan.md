@@ -70,7 +70,7 @@ This plan turns the architecture into **46 pull requests across six phases** (si
 | Gate | Before | Decision |
 |---|---|---|
 | G1 | PR 0.6 flag goes on | Results of `host-check` on ChatGPT: does a plain 401 start linking, and is `_meta.securitySchemes` read? |
-| G2 | Phase 3 starts | Accept the `requirement.md` §5.2 change (native form → system browser sheet) and the iOS 17.4 minimum |
+| G2 | Phase 3 starts | **Decided 18 Oct 2026:** the native form is replaced by the system browser sheet, and the minimum is **iOS 18** (above the 17.4 the `.https` callback needs) |
 | G3 | Phase 3.5 | Apple Developer team and the `app.iot.example` domain for universal links |
 | G4 | Phase 4 starts | Cloud provider for KMS, Redis and Postgres |
 | G5 | Phase 5 | Whether any enterprise tenant needs ID-JAG |
@@ -667,7 +667,7 @@ export async function verifyProof(proof: string, opts: {
 |---|---|---|
 | **3.6a** DPoP key and proofs | `Auth/DPoPKeyManager.swift`: `SecureEnclave.P256.Signing.PrivateKey` with `.privateKeyUsage`, handle stored in the Keychain. Simulator fallback to a software `P256` key under `#if targetEnvironment(simulator)` (the Simulator has no Secure Enclave). `Auth/DPoPProof.swift` builds the compact JWS: header `{typ, alg: ES256, jwk{kty, crv, x, y}}`, claims `{jti, htm, htu, iat, ath?, nonce?}`, signature = `rawRepresentation` (r‖s), plus the RFC 7638 thumbprint | 3 d |
 | **3.6b** Token store | `Auth/TokenStore.swift`: access token in memory. Refresh token in the Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly` and `kSecAttrSynchronizable = false`. A wipe API. Migrates away the old `StoredSession` item | 1.5 d |
-| **3.6c** Auth coordinator | `Auth/AuthCoordinator.swift`: PKCE pair, PAR request (with `dpop_jkt`), `ASWebAuthenticationSession(url:callback: .https(host:path:))` with an ephemeral session, exact `state`/`iss` check, code exchange with a DPoP proof. **Raises `IPHONEOS_DEPLOYMENT_TARGET` to 17.4**, which the `.https` callback requires (gate G2) | 4 d |
+| **3.6c** Auth coordinator | `Auth/AuthCoordinator.swift`: PKCE pair, PAR request (with `dpop_jkt`), `ASWebAuthenticationSession(url:callback: .https(host:path:))` with an ephemeral session, exact `state`/`iss` check, code exchange with a DPoP proof. **Raises `IPHONEOS_DEPLOYMENT_TARGET` to 18.0** (gate G2; the `.https` callback needs 17.4) | 4 d |
 | **3.6d** Refresh coordinator and API client | `Auth/RefreshCoordinator.swift` (actor, arch §7.5): proactive at 75 % of life, single-flight, signs out only on `invalid_grant`. `APIClient` sends `Authorization: DPoP` and a `DPoP` proof per request, and retries once on `use_dpop_nonce` | 3 d |
 | **3.6e** UI | `AuthView` becomes product copy plus **Log In** and **Sign Up** buttons; the mode becomes a hint on PAR. `AuthViewModel` drives the coordinator. Error states: cancelled, network, server | 2 d |
 | **3.6f** Project | Associated-domains and keychain entitlements, a real signing team (G3), and removal of `CODE_SIGN_IDENTITY = "-"` for device builds | 1.5 d |
@@ -691,6 +691,20 @@ export async function verifyProof(proof: string, opts: {
 - iOS on a physical device: sign up with a password, sign in again with a passkey (once 4.5 lands, or retest then), control a device, airplane-mode refresh, logout;
 - the host flows unaffected;
 - AC-38 to AC-42.
+
+### Phase 3 as built
+
+- **One server change set, one iOS change set.** The phase shipped as one branch rather than seven PRs and a parallel iOS series. `oauth/dpop.ts` is the library (3.1); the token endpoint, `/authorize` and `POST /par` carry the binding (3.2, 3.4); `security/credentials.ts`, the MCP gate and the API middleware enforce it (3.3); `http/app-links.ts` serves the association (3.5); `ios/IoTSwitch/Auth/` and the rewritten `SessionController` and `APIClient` are 3.6.
+- **Nonces and replay.** The nonce is an HMAC of the five-minute window under `INTERNAL_MAC_KEY`, current and previous accepted. It is checked after the signature, so an unauthenticated request can neither learn nor burn one, and before the `jti` is claimed, so a client told to fetch a fresh nonce loses nothing. The replay store is per process, like the other in-memory stores until 4.2.
+- **The first-party client is resolved in code, not by migration 011.** `iot-switch-ios` is synthesised in `oauth/clients.ts` (preregistered, verified, first party), so there is no row to drift from the code. Migration 010 adds `dpop_jkt` and `cnf_jkt` columns, the `first_party` flag on pending authorizations, and `par_requests`.
+- **PAR rows are their own table**, consumed with `DELETE … RETURNING`, rather than pending authorizations. A pushed request is validated in full when pushed, and validated again when used, so `/authorize` with a `request_uri` takes nothing else from the URL.
+- **Callback.** The custom scheme `com.example.iotswitch:/oauth/callback` is the default. `FIRST_PARTY_REDIRECT_URIS` adds the universal link on `API_BASE_URL`, and the AASA is published there once `APPLE_TEAM_ID` is set. The entitlement and a real signing team (3.6f) wait on G3. The scheme is lowercase because URL parsers lowercase schemes, and an exact redirect match would otherwise fail.
+- **Token lifetime.** The app's access tokens last `NATIVE_ACCESS_TOKEN_TTL_SECONDS` (600); hosts keep an hour. The app's tokens are the only ones issued for the API audience, which is how the store tells them apart.
+- **Legacy mode defaults to `deprecated`, not `on`.** Nothing has been released, so there is no installed base to warn first. Steps 1–2 of §10.2 still apply before `off`.
+- **`dpop_bound_access_tokens_required`** stays `false` in the MCP resource's metadata. `DPOP_REQUIRED_FOR_API` governs the REST API, which publishes no resource metadata.
+- **No introspection endpoint** exists, so "introspection returns `cnf`" (3.2) has nothing to change. `verifyOAuthAccessToken` returns `cnfJkt` to its in-process callers.
+- **iOS file names differ from the table.** `DPoP.swift` holds the key, the keyring and the proof builder (3.6a); `TokenStorage.swift` keeps only the refresh token and account (3.6b); `SessionController` is the coordinator for sign-in and refresh (3.6c, 3.6d); `WebAuthenticator.swift` puts the browser sheet behind a protocol. Refresh is proactive when a quarter of the token's life remains.
+- **Verified in the Simulator** on 18 Oct 2026: sign-up on the hosted page, callback, DPoP-bound exchange, list, add, switch, log out. The database showed one bound grant, revoked on logout. The physical-device run in the exit review remains open.
 
 ---
 
@@ -852,7 +866,7 @@ Extended in phase 1 and rerun at every phase exit, with results recorded in `spi
 | `INTERNAL_EXCHANGE` | `on` | 2.5 | n/a | Phase 2 exit |
 | `WRITE_BUDGETS` | `report` | 2.6 | `enforce` after 1 week | Phase 4 |
 | `DPOP_REQUIRED_FOR_API` | `off` | 3.3 | `on` when the iOS 3.6 build is the minimum supported | Phase 4 |
-| `LEGACY_FIRST_PARTY_AUTH` | `on` | 3.7 | `deprecated` → `off` | After one iOS release |
+| `LEGACY_FIRST_PARTY_AUTH` | `deprecated` (as built) | 3.7 | `off` | After one iOS release |
 | `PASSKEYS` | `off` | 4.5 | `on` | Phase 5 |
 | `HOST_EGRESS_PINNING` | `alert` | 5.3 | `enforce` per verified host, optional | n/a |
 | `ENTERPRISE_MANAGED_AUTH` | `off` | 5.1 | Per tenant | n/a |
@@ -918,13 +932,14 @@ Extended in phase 1 and rerun at every phase exit, with results recorded in `spi
 - [x] 2.7 Audit actor chain
 
 ### Phase 3
-- [ ] 3.1 DPoP library
-- [ ] 3.2 DPoP at the AS
-- [ ] 3.3 DPoP at RS and GW
-- [ ] 3.4 PAR and the iOS client registration
-- [ ] 3.5 Universal-link association
-- [ ] 3.6a–f iOS OAuth client
-- [ ] 3.7 Legacy sunset and requirement updates
+- [x] 3.1 DPoP library
+- [x] 3.2 DPoP at the AS
+- [x] 3.3 DPoP at RS and GW
+- [x] 3.4 PAR and the iOS client registration
+- [x] 3.5 Universal-link association (server side; the entitlement waits on G3)
+- [x] 3.6a–e iOS OAuth client
+- [ ] 3.6f Entitlements and a signing team (G3)
+- [x] 3.7 Legacy sunset and requirement updates
 
 ### Phase 4
 - [ ] 4.1 Postgres driver and dual CI

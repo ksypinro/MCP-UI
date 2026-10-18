@@ -6,8 +6,8 @@ import { mint, wellFormed } from '../tokens/format.ts';
 import { tokenDigest, tokenDigestCandidates } from '../tokens/hash.ts';
 import { grantRevoked } from '../revocation.ts';
 import {
-  AUTHORIZATION_CODE_TTL_SECONDS, OAUTH_ACCESS_TOKEN_TTL_SECONDS,
-  OAUTH_REFRESH_TOKEN_TTL_SECONDS, PENDING_AUTHORIZATION_TTL_SECONDS, type Scope
+  API_RESOURCE, AUTHORIZATION_CODE_TTL_SECONDS, NATIVE_ACCESS_TOKEN_TTL_SECONDS, OAUTH_ACCESS_TOKEN_TTL_SECONDS,
+  OAUTH_REFRESH_TOKEN_TTL_SECONDS, PAR_TTL_SECONDS, PENDING_AUTHORIZATION_TTL_SECONDS, type Scope
 } from './config.ts';
 
 export interface PendingAuthorization {
@@ -27,6 +27,10 @@ export interface PendingAuthorization {
   offlineAccess: boolean;
   /** Keyed hash of the browser-binding cookie this authorization belongs to. */
   bindingDigest: string;
+  /** The DPoP key thumbprint the client committed to (RFC 9449 dpop_jkt), if any. */
+  dpopJkt: string | null;
+  /** Our own app: consent is implied, never shown. */
+  firstParty: boolean;
 }
 
 export type NewPendingAuthorization = Omit<PendingAuthorization, 'id' | 'bindingDigest'>;
@@ -46,13 +50,13 @@ export async function createPendingAuthorization(
   await db.query(
     `INSERT INTO oauth_pending_authorizations
        (id, client_id, client_host, client_kind, client_trust, document_digest, redirect_uri, state,
-        code_challenge, resource, scope, offline_access, binding_hash, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, now() + make_interval(secs => $14))`,
+        code_challenge, resource, scope, offline_access, binding_hash, dpop_jkt, first_party, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now() + make_interval(secs => $16))`,
     [
       id, pending.clientId, pending.clientHost, pending.clientKind, pending.clientTrust,
       pending.documentDigest, pending.redirectUri, pending.state, pending.codeChallenge,
       pending.resource, pending.scopes.join(' '), pending.offlineAccess, tokenDigest(bindingValue),
-      PENDING_AUTHORIZATION_TTL_SECONDS
+      pending.dpopJkt, pending.firstParty, PENDING_AUTHORIZATION_TTL_SECONDS
     ]
   );
   return id;
@@ -66,10 +70,10 @@ export async function readPendingAuthorization(
     id: string; client_id: string; client_host: string; client_kind: PendingAuthorization['clientKind'];
     client_trust: PendingAuthorization['clientTrust']; document_digest: string | null;
     redirect_uri: string; state: string | null; code_challenge: string; resource: string; scope: string;
-    offline_access: boolean; binding_hash: string;
+    offline_access: boolean; binding_hash: string; dpop_jkt: string | null; first_party: boolean;
   }>(
     `SELECT id, client_id, client_host, client_kind, client_trust, document_digest, redirect_uri, state,
-            code_challenge, resource, scope, offline_access, binding_hash
+            code_challenge, resource, scope, offline_access, binding_hash, dpop_jkt, first_party
        FROM oauth_pending_authorizations
       WHERE id = $1 AND expires_at > now()`,
     [id]
@@ -89,7 +93,9 @@ export async function readPendingAuthorization(
     resource: row.resource,
     scopes: row.scope.split(' ').filter(Boolean) as Scope[],
     offlineAccess: row.offline_access,
-    bindingDigest: row.binding_hash
+    bindingDigest: row.binding_hash,
+    dpopJkt: row.dpop_jkt,
+    firstParty: row.first_party
   };
 }
 
@@ -138,12 +144,12 @@ async function issueAuthorizationCode(
   await db.query(
     `INSERT INTO oauth_authorization_codes
        (code_hash, account_id, client_id, redirect_uri, code_challenge, resource, scope,
-        offline_access, auth_time, consent_id, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + make_interval(secs => $11))`,
+        offline_access, auth_time, consent_id, dpop_jkt, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now() + make_interval(secs => $12))`,
     [
       tokenDigest(code), accountId, pending.clientId, pending.redirectUri,
       pending.codeChallenge, pending.resource, pending.scopes.join(' '),
-      pending.offlineAccess, context.authTime, context.consentId,
+      pending.offlineAccess, context.authTime, context.consentId, pending.dpopJkt,
       AUTHORIZATION_CODE_TTL_SECONDS
     ]
   );
@@ -162,11 +168,13 @@ export interface AuthorizationCodeRecord {
   /** Set only if this code was successfully exchanged for a grant. */
   grantId: string | null;
   offlineAccess: boolean;
+  /** The key the code may only be redeemed with, if the client committed to one. */
+  dpopJkt: string | null;
 }
 
 interface CodeRow {
   account_id: string; client_id: string; redirect_uri: string; code_challenge: string;
-  resource: string; scope: string; grant_id: string | null; offline_access: boolean;
+  resource: string; scope: string; grant_id: string | null; offline_access: boolean; dpop_jkt: string | null;
 }
 
 /**
@@ -191,7 +199,7 @@ export async function consumeAuthorizationCode(
     `UPDATE oauth_authorization_codes
         SET consumed_at = now()
       WHERE code_hash = ANY($1::text[]) AND consumed_at IS NULL AND expires_at > now()
-      RETURNING account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id, offline_access`,
+      RETURNING account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id, offline_access, dpop_jkt`,
     [candidates]
   );
   const fresh = rows[0];
@@ -200,7 +208,7 @@ export async function consumeAuthorizationCode(
   // Nothing flipped: the code is unknown, expired, or already spent. Only a
   // read tells them apart.
   const { rows: misses } = await db.query<CodeRow & { already_consumed: boolean; expired: boolean }>(
-    `SELECT account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id, offline_access,
+    `SELECT account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id, offline_access, dpop_jkt,
             (consumed_at IS NOT NULL) AS already_consumed,
             (expires_at <= now()) AS expired
        FROM oauth_authorization_codes WHERE code_hash = ANY($1::text[])`,
@@ -221,7 +229,8 @@ function toCodeRecord(row: CodeRow, alreadyConsumed: boolean, expired: boolean):
     alreadyConsumed,
     expired,
     grantId: row.grant_id,
-    offlineAccess: row.offline_access
+    offlineAccess: row.offline_access,
+    dpopJkt: row.dpop_jkt
   };
 }
 
@@ -231,20 +240,24 @@ export interface IssuedTokens {
   accessToken: string;
   /** Null when the grant carries no refresh right; see REQUIRE_OFFLINE_ACCESS_FOR_REFRESH. */
   refreshToken: string | null;
+  /** DPoP when the grant is bound to a key, Bearer otherwise. */
+  tokenType: 'DPoP' | 'Bearer';
   expiresIn: number;
   scope: string;
 }
 
 export async function issueTokens(
-  db: Queryable, grantId: string, audience: string, scope: string, withRefresh = true
+  db: Queryable, grantId: string, audience: string, scope: string, withRefresh = true, cnfJkt: string | null = null
 ): Promise<IssuedTokens> {
   const accessToken = mint('access');
   const refreshToken = withRefresh ? mint('refresh') : null;
+  // Only the first-party app is issued tokens for the REST API.
+  const lifetime = audience === API_RESOURCE ? NATIVE_ACCESS_TOKEN_TTL_SECONDS : OAUTH_ACCESS_TOKEN_TTL_SECONDS;
 
   await db.query(
-    `INSERT INTO oauth_access_tokens (token_hash, grant_id, audience, scope, expires_at)
-     VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5))`,
-    [tokenDigest(accessToken), grantId, audience, scope, OAUTH_ACCESS_TOKEN_TTL_SECONDS]
+    `INSERT INTO oauth_access_tokens (token_hash, grant_id, audience, scope, cnf_jkt, expires_at)
+     VALUES ($1, $2, $3, $4, $5, now() + make_interval(secs => $6))`,
+    [tokenDigest(accessToken), grantId, audience, scope, cnfJkt, lifetime]
   );
   if (refreshToken) {
     await db.query(
@@ -256,8 +269,9 @@ export async function issueTokens(
 
   return {
     accessToken, refreshToken,
-    expiresIn: OAUTH_ACCESS_TOKEN_TTL_SECONDS,
-    scope
+    expiresIn: lifetime,
+    scope,
+    tokenType: cnfJkt ? 'DPoP' : 'Bearer'
   };
 }
 
@@ -335,11 +349,13 @@ export type RefreshOutcome =
   | { kind: 'theft' }
   | { kind: 'invalid'; reason: 'unknown' | 'dead' | 'wrong_client' }
   | { kind: 'invalid_target' }
-  | { kind: 'invalid_scope' };
+  | { kind: 'invalid_scope' }
+  /** The grant is DPoP-bound and the proof was missing or from another key. */
+  | { kind: 'invalid_dpop' };
 
 interface LockedRefreshRow {
   token_hash: string; grant_id: string; audience: string; scope: string; replaced_by: string | null;
-  client_id: string; revoked: boolean; expired: boolean; grant_revoked: boolean;
+  client_id: string; dpop_jkt: string | null; revoked: boolean; expired: boolean; grant_revoked: boolean;
   within_grace: boolean; successor_used: boolean;
 }
 
@@ -366,6 +382,8 @@ export async function rotateRefresh(
   presented: unknown,
   request: {
     clientId: string; resource: unknown; scope: unknown; graceSeconds: number;
+    /** Thumbprint of the key that signed this request's DPoP proof, if one was sent and verified. */
+    presentedJkt: string | null;
     seal: (issued: IssuedTokens) => void;
   }
 ): Promise<RefreshOutcome> {
@@ -373,7 +391,7 @@ export async function rotateRefresh(
 
   return db.transaction<RefreshOutcome>(async (tx) => {
     const { rows } = await tx.query<LockedRefreshRow>(
-      `SELECT r.token_hash, r.grant_id, r.audience, r.scope, r.replaced_by, g.client_id,
+      `SELECT r.token_hash, r.grant_id, r.audience, r.scope, r.replaced_by, g.client_id, g.dpop_jkt,
               (r.revoked_at IS NOT NULL) AS revoked,
               (r.expires_at <= now()) AS expired,
               (g.revoked_at IS NOT NULL) AS grant_revoked,
@@ -390,6 +408,10 @@ export async function rotateRefresh(
     );
     const row = rows[0];
     if (!row) return { kind: 'invalid', reason: 'unknown' };
+
+    // A bound grant's refresh token is worthless without its key — including
+    // to someone replaying it inside the grace window.
+    if (row.dpop_jkt && row.dpop_jkt !== request.presentedJkt) return { kind: 'invalid_dpop' };
 
     if (row.replaced_by !== null) {
       if (row.grant_revoked) return { kind: 'invalid', reason: 'dead' };
@@ -416,7 +438,7 @@ export async function rotateRefresh(
       scope = requested.join(' ');
     }
 
-    const issued = await issueTokens(tx, row.grant_id, row.audience, scope);
+    const issued = await issueTokens(tx, row.grant_id, row.audience, scope, true, row.dpop_jkt);
     await tx.query(
       `UPDATE oauth_refresh_tokens SET replaced_by = $1, replaced_at = now()
         WHERE token_hash = $2 AND replaced_by IS NULL`,
@@ -439,20 +461,22 @@ export async function establishGrant(
   db: Db,
   options: {
     code: string; accountId: string; clientId: string; resource: string; scope: string; withRefresh: boolean;
+    /** Binds the grant and every token it issues to this DPoP key. */
+    dpopJkt: string | null;
   }
 ): Promise<IssuedTokens> {
   return db.transaction(async (tx) => {
     const grantId = newId('grant');
     await tx.query(
-      `INSERT INTO oauth_grants (id, account_id, client_id, resource, scope)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [grantId, options.accountId, options.clientId, options.resource, options.scope]
+      `INSERT INTO oauth_grants (id, account_id, client_id, resource, scope, dpop_jkt)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [grantId, options.accountId, options.clientId, options.resource, options.scope, options.dpopJkt]
     );
     await tx.query(
       'UPDATE oauth_authorization_codes SET grant_id = $1 WHERE code_hash = ANY($2::text[])',
       [grantId, tokenDigestCandidates(options.code)]
     );
-    return issueTokens(tx, grantId, options.resource, options.scope, options.withRefresh);
+    return issueTokens(tx, grantId, options.resource, options.scope, options.withRefresh, options.dpopJkt);
   });
 }
 
@@ -477,4 +501,35 @@ export async function pruneExpiredOAuth(db: Db): Promise<void> {
   await db.query('DELETE FROM oauth_refresh_tokens WHERE expires_at <= now()');
   await db.query('DELETE FROM oauth_authorization_codes WHERE expires_at <= now()');
   await db.query('DELETE FROM oauth_pending_authorizations WHERE expires_at <= now()');
+  await db.query('DELETE FROM par_requests WHERE expires_at <= now()');
+}
+
+/* ------------------------------------------------- pushed authorization */
+
+/**
+ * Stores a validated authorization request pushed over the back channel
+ * (RFC 9126) and returns the id its request_uri names. Single use, a minute.
+ */
+export async function storePushedRequest(
+  db: Queryable, clientId: string, params: Record<string, string>
+): Promise<string> {
+  const id = newId('par');
+  await db.query(
+    `INSERT INTO par_requests (id, client_id, params, expires_at)
+     VALUES ($1, $2, $3, now() + make_interval(secs => $4))`,
+    [id, clientId, JSON.stringify(params), PAR_TTL_SECONDS]
+  );
+  return id;
+}
+
+/** Takes (and so spends) a pushed request, if it is live and was pushed by this client. */
+export async function takePushedRequest(
+  db: Queryable, id: string, clientId: string
+): Promise<Record<string, string> | null> {
+  const { rows } = await db.query<{ params: string }>(
+    `DELETE FROM par_requests WHERE id = $1 AND client_id = $2 AND expires_at > now() RETURNING params`,
+    [id, clientId]
+  );
+  const row = rows[0];
+  return row ? JSON.parse(row.params) as Record<string, string> : null;
 }

@@ -14,7 +14,9 @@ import { isIP, type LookupFunction } from 'node:net';
 import { createHash, randomBytes } from 'node:crypto';
 import ipaddr from 'ipaddr.js';
 import type { Db, Queryable } from '../db/index.ts';
-import { MAX_REGISTERED_CLIENTS, UNUSED_CLIENT_TTL_SECONDS } from './config.ts';
+import {
+  FIRST_PARTY_CLIENT_ID, MAX_REGISTERED_CLIENTS, UNUSED_CLIENT_TTL_SECONDS, firstPartyRedirectUris
+} from './config.ts';
 import { MemoryBucketStore, bucket } from '../security/rate-limit.ts';
 
 export interface ResolvedClient {
@@ -42,6 +44,8 @@ export interface ResolvedClient {
    * is tied to it, so a changed document asks the person again.
    */
   documentDigest: string | null;
+  /** Our own app: consent implied, PAR and DPoP required, API resource only. */
+  firstParty: boolean;
 }
 
 const CIMD_TIMEOUT_MS = 5_000;
@@ -244,7 +248,8 @@ async function cachedDocument(db: Queryable, clientId: string): Promise<Resolved
     displayHost: row.display_host,
     kind: 'cimd',
     trust: knownClients().has(clientId) ? 'verified' : 'unverified',
-    documentDigest: row.digest
+    documentDigest: row.digest,
+    firstParty: false
   };
 }
 
@@ -300,7 +305,8 @@ async function resolveMetadataDocument(
       displayHost: url.host,
       kind: 'cimd',
       trust: knownClients().has(clientId) ? 'verified' : 'unverified',
-      documentDigest: digest
+      documentDigest: digest,
+      firstParty: false
     };
   } catch {
     return null;
@@ -432,7 +438,8 @@ async function resolveRegisteredClient(db: Queryable, clientId: string): Promise
     displayHost: null,
     kind: preregistered ? 'preregistered' : 'dcr',
     trust: preregistered ? 'verified' : 'unverified',
-    documentDigest: null
+    documentDigest: null,
+    firstParty: false
   };
 }
 
@@ -446,6 +453,12 @@ export async function resolveClient(
   db: Queryable, clientId: unknown, options: { fetcher?: CimdFetcher } = {}
 ): Promise<ResolvedClient | null> {
   if (typeof clientId !== 'string' || clientId.length === 0 || clientId.length > 2048) return null;
+  if (clientId === FIRST_PARTY_CLIENT_ID) {
+    return {
+      clientId, redirectUris: firstPartyRedirectUris(), displayHost: 'the IoT Switch app',
+      kind: 'preregistered', trust: 'verified', documentDigest: null, firstParty: true
+    };
+  }
   if (clientId.startsWith('https://')) return resolveMetadataDocument(db, clientId, options.fetcher ?? pinnedFetcher);
   return resolveRegisteredClient(db, clientId);
 }

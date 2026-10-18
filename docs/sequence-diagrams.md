@@ -10,25 +10,34 @@ Companion documents: [Architecture](./architecture.md) ·
 
 ## 1. Native app — sign up and add the first device
 
-Implements §10.1.
+Implements §10.1. The app never sees the password: it is typed on the hosted
+page, in the system browser sheet.
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor U as Person
     participant A as iOS app
+    participant B as Browser sheet
     participant S as Server
     participant DB as Database
 
-    U->>A: Sign Up, username + password
-    A->>S: POST /v1/auth/signup
+    U->>A: Sign Up
+    A->>A: PKCE pair, state, Secure Enclave key thumbprint
+    A->>S: POST /par (challenge, state, dpop_jkt, prompt=create)
+    S-->>A: request_uri (single use, 60 s)
+    A->>B: open /authorize?client_id&request_uri
+    U->>B: username + password, on the hosted page
+    B->>S: POST the sign-up form
     S->>DB: INSERT accounts … ON CONFLICT DO NOTHING
     Note over S,DB: the unique index decides,<br/>not application code
-    DB-->>S: account
-    S->>DB: create session + access token
-    S-->>A: account, accessToken, refreshToken
-    A->>A: store in Keychain
-    A->>S: GET /v1/devices
+    S-->>B: redirect to callback (code, state, iss)
+    B-->>A: callback
+    A->>A: check iss, then state
+    A->>S: POST /token (code, verifier) + DPoP proof
+    S->>DB: grant + tokens, bound to the key (cnf_jkt)
+    S-->>A: access token (10 min, memory) + refresh token (Keychain)
+    A->>S: GET /v1/devices, Authorization: DPoP + proof
     S-->>A: { devices: [] }
     A-->>U: empty state, "Add a device"
 
@@ -196,7 +205,11 @@ own; the host owns the connection.
 
 ## 5. Refresh rotation, and a stolen token
 
-Implements §7.1 and §7.2.
+Implements §7.1 and §7.2. This is the deprecated first-party session path.
+OAuth refresh — hosts, and the app since phase 3 — follows the same rule per
+grant, with a 30-second window in which an identical retry gets the identical
+response instead of revoking (`rotateRefresh` in `oauth/store.ts`). A refresh
+token bound to a DPoP key also needs a proof from that key.
 
 ```mermaid
 sequenceDiagram

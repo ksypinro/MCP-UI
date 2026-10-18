@@ -28,11 +28,11 @@ graph TB
         db[("PostgreSQL")]
     end
 
-    ios -->|"bearer, first-party session"| rest
+    ios -->|"DPoP-bound OAuth token"| rest
     host -->|"bearer, OAuth token"| mcp
     view -.->|"postMessage"| host
     host -->|"forwards tools/call"| mcp
-    ios -->|"sign up · log in"| oauth
+    ios -->|"PAR · browser sheet"| oauth
     host -->|"browser, OAuth"| oauth
 
     rest --> domain
@@ -106,13 +106,13 @@ server/
     oauth/              OAuth 2.1 authorization server
     mcp/                MCP adapter: gate, tools, resources
       ui/assets/        the four views, plus the shared bridge and stylesheet
-  test/                 221 tests
+  test/                 238 tests
   acceptance/           criteria mapped to the tests that establish them
   tools/                dev harnesses: mock-host, host-check, client-check
 
 ios/
   IoTSwitch/            SwiftUI app — models, networking, session, view models, views
-  IoTSwitchTests/       49 tests
+  IoTSwitchTests/       60 tests
 
 spike/                  phase 0 feasibility spike, superseded and kept as a record
 ```
@@ -194,25 +194,31 @@ rather than overclaimed.
 
 ---
 
-## 5. Authentication: two systems, deliberately separate
+## 5. Authentication: one authorization server, two audiences
 
 ```mermaid
 graph TB
     subgraph fp [First-party · the iOS app]
         direction LR
-        f1["POST /v1/auth/login"] --> f2["sessions + access_tokens"]
-        f2 --> f3["opaque bearer<br/>resolved per request"]
+        f1["PAR + browser sheet<br/>OAuth 2.1 + PKCE"] --> f2["oauth_grants + tokens<br/>audience: the API"]
+        f2 --> f3["DPoP-bound, 10 min<br/>resolved per request"]
     end
     subgraph tp [Third-party · MCP hosts]
         direction LR
-        t1["OAuth 2.1 + PKCE"] --> t2["oauth_grants + tokens"]
-        t2 --> t3["scoped, audience-bound bearer"]
+        t1["OAuth 2.1 + PKCE"] --> t2["oauth_grants + tokens<br/>audience: /mcp"]
+        t2 --> t3["scoped bearer<br/>(DPoP if the host offers it)"]
     end
 ```
 
-They never mix. A first-party token is not accepted at `/mcp`; an OAuth token
-is not accepted at `/v1/*`. §7.2 requires that logging out of one does not
-silently claim to disconnect the other.
+Since phase 3 of the authentication redesign the iOS app signs in the way a
+host does: on the hosted page, through the system browser sheet, with tokens
+bound to a Secure Enclave key. Its grants are still separate from a host's.
+An app token is not accepted at `/mcp`, and a host token is not accepted at
+`/v1/*`. §7.2 requires that logging out of one does not silently claim to
+disconnect the other.
+
+The first-party session tables below still back the deprecated `/v1/auth/*`
+endpoints until they are switched off (`LEGACY_FIRST_PARTY_AUTH=off`).
 
 ### Why tokens are opaque and resolved per request
 
@@ -372,10 +378,18 @@ graph TB
     vm --> dcs["DeviceControlService<br/><small>§5.6, once</small>"]
     vm --> sc["SessionController"]
     dcs --> sc
+    sc --> web["WebAuthenticator<br/><small>ASWebAuthenticationSession</small>"]
     sc --> api["APIClient"]
-    sc --> kc["Keychain"]
+    sc --> kc["Keychain<br/><small>refresh token only</small>"]
+    api --> key["DPoPKeyring<br/><small>Secure Enclave key</small>"]
     api --> server["server/"]
 ```
+
+The app has no password fields. Log In and Sign Up push an authorization
+request (PAR), open the hosted page in an ephemeral browser sheet, check the
+callback's `iss` and `state`, and exchange the code with a DPoP proof. The
+access token lives only in memory; every request carries a fresh proof signed
+in the Secure Enclave.
 
 **Views hold no logic and make no network calls.** Every decision lives in a
 view model, which is what lets the switch behaviour be tested exhaustively
@@ -395,9 +409,10 @@ Three outcomes carry the weight:
 - **Pending intent is not state** — an unconfirmed change never becomes the
   displayed truth.
 
-Refresh is single-flight. The backend revokes an entire token family on a
-replayed refresh token, so two requests racing to refresh would not merely
-duplicate work — they would log the user out of every device.
+Refresh is single-flight and proactive, once a quarter of the token's life is
+left. The backend revokes the whole grant on a replayed refresh token, so two
+requests racing to refresh would not merely duplicate work — they would sign
+the user out.
 
 ---
 
@@ -436,13 +451,15 @@ physical device. `npm run acceptance` names each one.
 The redesign that addresses these and the authentication gaps found in
 review is in [Authentication Architecture v2](./authentication-architecture/authentication-architecture.md),
 delivered by its [implementation plan](./authentication-architecture/implementation-plan.md).
-Phases 0 to 2 of that plan are implemented: hardened authorization pages,
+Phases 0 to 3 of that plan are implemented: hardened authorization pages,
 race-safe codes and refresh, the ChatGPT challenge form, bridge origin
 pinning, the iOS refresh fix, three origins, typed tokens stored as keyed
 hashes, a peppered password store, separate sign-in and consent with a
 remembered-consent registry, hardened CIMD and DCR, and — behind both front
 doors — a Device Service reachable only with a one-minute internal token
 obtained by token exchange, a tool policy table with write budgets, and an
-audit trail naming the client, grant and adapter behind every change.
-Sections 2, 5 and 6 above describe the system before those phases; the v2
+audit trail naming the client, grant and adapter behind every change. Phase 3
+moved the iOS app onto the authorization server: browser sign-in, PAR, and
+DPoP-bound tokens from a Secure Enclave key.
+Sections 2 and 6 above describe the system before those phases; the v2
 document describes it after.

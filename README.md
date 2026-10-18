@@ -28,20 +28,20 @@ graph LR
 | [`requirement.md`](./requirement.md) | The specification everything implements |
 | [`docs/`](./docs) | Architecture, code flow, sequence diagrams, testing |
 
-Roughly 16,600 lines, 270 tests.
+Roughly 17,600 lines, 298 tests.
 
 ---
 
 ## Quick start
 
 **Requirements:** Node 22+ (25 recommended — it runs TypeScript directly).
-Xcode 16+ only if you want the iOS app.
+Xcode 16+ only if you want the iOS app, which runs on iOS 18 and later.
 
 ```bash
 cd server
 npm install
 npm start            # http://localhost:4000
-npm test             # 221 tests
+npm test             # 238 tests
 ```
 
 Nothing to provision. The store is [PGlite](https://pglite.dev) — real
@@ -49,6 +49,9 @@ PostgreSQL compiled to WebAssembly — so there is no database to install.
 
 <details>
 <summary><b>Try it from the command line</b></summary>
+
+The password endpoints below are deprecated — the app now signs in through
+the browser — but they still answer, which keeps this short.
 
 ```bash
 # create an account
@@ -77,7 +80,9 @@ open IoTSwitch.xcodeproj
 ```
 
 It points at `http://localhost:4000` by default. Pass
-`-apiBaseURL http://…` as a launch argument to aim it elsewhere.
+`-apiBaseURL http://…` and `-authBaseURL http://…` as launch arguments to aim
+it elsewhere. Log In and Sign Up open the server's own page in the system
+browser sheet; the app never sees a password.
 
 ```bash
 xcodebuild -project IoTSwitch.xcodeproj -scheme IoTSwitch \
@@ -140,8 +145,9 @@ or may not have applied. The client reads before offering a retry, and never
 sends the inverse command. That is how a switch ends up flipping itself back.
 
 **Credentials are typed in exactly one place.** A hosted authorization page,
-reached through the host's OAuth flow. Never in a conversation, a tool
-argument, or a view.
+reached through the host's OAuth flow or the iOS app's browser sheet. Never in
+a conversation, a tool argument, a view, or a native screen. The app's tokens
+are bound to a key in its Secure Enclave, so a copied token is useless.
 
 **→ [Architecture](./docs/architecture.md)** ·
 **[Code flow](./docs/code-flow.md)** ·
@@ -162,8 +168,9 @@ them.
 | `PUT /v1/devices/{id}/state` | `{ state, expectedVersion }` |
 | `POST /v1/devices` | `{ name }`, optional `Idempotency-Key` |
 
-Plus `/v1/auth/{signup,login,me,refresh,logout}`, the OAuth endpoints, and
-`/mcp`.
+Plus `/v1/auth/me`, the OAuth endpoints (including `/par` for the iOS app),
+and `/mcp`. The password endpoints `/v1/auth/{signup,login,refresh,logout}`
+are deprecated.
 
 ### MCP tools
 
@@ -195,20 +202,25 @@ Plus `/v1/auth/{signup,login,me,refresh,logout}`, the OAuth endpoints, and
 | `SIGNING_KEYS` | the key file | JSON array of private P-256 JWKs, current first, that sign internal tokens. Published at `/.well-known/jwks.json` |
 | `WRITE_BUDGETS` | `report` | `enforce` refuses writes over budget: 6 switches a minute per device, 20 a minute and 10 new devices an hour per grant |
 | `DATABASE_PATH` | `./.data` | Delete it to reset |
-| `ACCESS_TOKEN_TTL_SECONDS` | `900` | |
-| `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | |
+| `ACCESS_TOKEN_TTL_SECONDS` | `900` | Legacy first-party sessions |
+| `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Legacy first-party sessions |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | `20` | Credential submissions per address |
 | `TRUST_PROXY` | off | Only behind a proxy you control |
 | `AUTHORIZE_VIEW_RATE_LIMIT_PER_MINUTE` | `60` | Authorization page views per address |
 | `REFRESH_GRACE_SECONDS` | `30` | A duplicate refresh inside this window gets the identical response instead of revoking the grant |
+| `NATIVE_ACCESS_TOKEN_TTL_SECONDS` | `600` | The iOS app's DPoP-bound access tokens. Hosts get an hour |
+| `LEGACY_FIRST_PARTY_AUTH` | `deprecated` | The old password endpoints. `deprecated` adds `Deprecation` and `Sunset` headers; `off` answers sign-up, log-in and refresh with `410` |
+| `DPOP_REQUIRED_FOR_API` | `off` | `on`: the REST API accepts only DPoP-bound tokens |
+| `FIRST_PARTY_REDIRECT_URIS` | the app scheme and `API_BASE_URL/oauth/callback` | The iOS app's OAuth callbacks |
+| `APPLE_TEAM_ID`, `APPLE_BUNDLE_ID` | unset, `com.example.IoTSwitch` | With a team, publish `/.well-known/apple-app-site-association` for the universal-link callback |
 | `CHATGPT_TOOL_CHALLENGE` | off | `trusted-header`: answer ChatGPT's unauthenticated calls with a tool-level challenge. Needs `TRUST_PROXY` and a proxy that sets `X-Verified-Client: chatgpt` from ChatGPT's mTLS certificate and strips it otherwise |
 
 ---
 
 ## Status
 
-270 tests pass. `npm run acceptance` reports **27 of 37** acceptance criteria
-proven, 7 partial, 3 open. Nine of the thirty-seven (AC-29 to AC-37) come from the
+298 tests pass. `npm run acceptance` reports **29 of 42** acceptance criteria
+proven, 10 partial, 3 open. Fourteen of the forty-two (AC-29 to AC-42) come from the
 [authentication redesign](./docs/authentication-architecture/authentication-architecture.md)
 rather than the specification.
 
