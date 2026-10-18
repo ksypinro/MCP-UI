@@ -3,11 +3,13 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import type { Db } from '../db/index.ts';
 import { AppError, isAppError } from '../errors.ts';
 import { verifyAccessToken } from '../domain/sessions.ts';
-import type { Identity } from '../domain/types.ts';
+import type { VerifiedCaller } from '../domain/types.ts';
+import { FIRST_PARTY_CLIENT_ID } from '../oauth/exchange.ts';
+import { SCOPES } from '../oauth/config.ts';
 
 export interface RequestContext {
   requestId: string;
-  identity?: Identity;
+  caller?: VerifiedCaller;
   sessionId?: string;
 }
 
@@ -17,10 +19,10 @@ export function context(res: Response): RequestContext {
 }
 
 /** The verified caller, or a 401. Route handlers use this, never res.locals. */
-export function identityOf(res: Response): Identity {
-  const identity = context(res).identity;
-  if (!identity) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
-  return identity;
+export function callerOf(res: Response): VerifiedCaller {
+  const caller = context(res).caller;
+  if (!caller) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
+  return caller;
 }
 
 export function withRequestId(): RequestHandler {
@@ -43,19 +45,27 @@ function bearer(req: Request): string | null {
  *
  * `required: false` is used on endpoints that behave differently when signed
  * in but do not demand it. It never *rejects* — the route decides, via
- * identityOf, so that an optional-auth route cannot accidentally become a
+ * callerOf, so that an optional-auth route cannot accidentally become a
  * protected one by forgetting a guard.
  */
 export function authenticate(db: Db, options: { required: boolean }): RequestHandler {
   return async (req, res, next) => {
     try {
-      const verified = await verifyAccessToken(db, bearer(req));
-      if (verified) {
+      const token = bearer(req);
+      const verified = await verifyAccessToken(db, token);
+      if (verified && token) {
         const ctx = context(res);
-        ctx.identity = {
+        // A first-party session holds every device scope; its family is its
+        // grant, stable across rotation.
+        ctx.caller = {
+          kind: 'verified',
           accountId: verified.accountId,
+          clientId: FIRST_PARTY_CLIENT_ID,
+          grantId: verified.familyId,
           channel: 'native',
-          requestId: ctx.requestId
+          scopes: SCOPES,
+          requestId: ctx.requestId,
+          credential: token
         };
         ctx.sessionId = verified.sessionId;
       } else if (options.required) {

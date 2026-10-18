@@ -12,9 +12,15 @@
  *    password and token unverifiable, so back it up with the database.
  * 3. Otherwise, fresh random keys for this process only. That is what tests
  *    get, and it is refused when NODE_ENV is production.
+ *
+ * Signing keys for internal tokens (ES256) follow the same order, with
+ * SIGNING_KEYS as a JSON array of private JWKs, current first. Unlike the
+ * peppers they may be per-process even in production: an internal token
+ * lives a minute and, while every component runs in one process, is only
+ * ever verified by the process that signed it.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, type JsonWebKey } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -23,11 +29,46 @@ export interface VersionedKey {
   key: Buffer;
 }
 
+/** A private ES256 key as a JWK, with its RFC 7638 thumbprint as `kid`. */
+export interface SigningKey {
+  kid: string;
+  privateJwk: JsonWebKey;
+  publicJwk: JsonWebKey;
+}
+
 export interface KeyMaterial {
   /** The first entry is current; the rest still verify during rotation. */
   tokenPeppers: VersionedKey[];
   passwordPepper: VersionedKey;
   internalMacKey: Buffer;
+  /** The first entry signs; the rest are published for verification until retired. */
+  signingKeys: SigningKey[];
+}
+
+/** RFC 7638 thumbprint of an EC public key. */
+function thumbprint(jwk: JsonWebKey): string {
+  const canonical = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y });
+  return createHash('sha256').update(canonical).digest('base64url');
+}
+
+function toSigningKey(privateJwk: JsonWebKey): SigningKey {
+  if (privateJwk.kty !== 'EC' || privateJwk.crv !== 'P-256' || !privateJwk.d) {
+    throw new Error('Signing keys must be private P-256 JWKs');
+  }
+  const publicJwk: JsonWebKey = { kty: 'EC', crv: 'P-256', x: privateJwk.x, y: privateJwk.y };
+  return { kid: thumbprint(publicJwk), privateJwk, publicJwk };
+}
+
+export function newSigningKey(): SigningKey {
+  const { privateKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  return toSigningKey(privateKey.export({ format: 'jwk' }));
+}
+
+function signingKeysFromEnvironment(): SigningKey[] | null {
+  if (!process.env.SIGNING_KEYS) return null;
+  const parsed = JSON.parse(process.env.SIGNING_KEYS) as JsonWebKey[];
+  if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('SIGNING_KEYS must be a non-empty JSON array');
+  return parsed.map(toSigningKey);
 }
 
 let keyFile: string | null = null;
@@ -76,7 +117,8 @@ function fromEnvironment(): KeyMaterial | null {
   return {
     tokenPeppers: TOKEN_PEPPERS.split(',').map((entry) => parseVersioned(entry.trim())),
     passwordPepper: parseVersioned(PASSWORD_PEPPER),
-    internalMacKey
+    internalMacKey,
+    signingKeys: signingKeysFromEnvironment() ?? [newSigningKey()]
   };
 }
 
@@ -84,27 +126,37 @@ interface KeyFileShape {
   tokenPeppers: { version: number; key: string }[];
   passwordPepper: { version: number; key: string };
   internalMacKey: string;
+  /** Absent in files written before signing keys existed; added on next start. */
+  signingKeys?: JsonWebKey[];
+}
+
+function writeKeyFile(path: string, material: KeyMaterial, flag: 'wx' | 'w'): void {
+  const shape: KeyFileShape = {
+    tokenPeppers: material.tokenPeppers.map(({ version, key }) => ({ version, key: key.toString('base64') })),
+    passwordPepper: { version: material.passwordPepper.version, key: material.passwordPepper.key.toString('base64') },
+    internalMacKey: material.internalMacKey.toString('base64'),
+    signingKeys: material.signingKeys.map((key) => key.privateJwk)
+  };
+  writeFileSync(path, JSON.stringify(shape, null, 2), { mode: 0o600, flag });
 }
 
 function fromFile(): KeyMaterial | null {
   if (!keyFile) return null;
   if (!existsSync(keyFile)) {
     const fresh = ephemeral(true);
-    const shape: KeyFileShape = {
-      tokenPeppers: fresh.tokenPeppers.map(({ version, key }) => ({ version, key: key.toString('base64') })),
-      passwordPepper: { version: fresh.passwordPepper.version, key: fresh.passwordPepper.key.toString('base64') },
-      internalMacKey: fresh.internalMacKey.toString('base64')
-    };
     mkdirSync(dirname(keyFile), { recursive: true });
-    writeFileSync(keyFile, JSON.stringify(shape, null, 2), { mode: 0o600, flag: 'wx' });
+    writeKeyFile(keyFile, fresh, 'wx');
     return fresh;
   }
   const shape = JSON.parse(readFileSync(keyFile, 'utf8')) as KeyFileShape;
-  return {
+  const material: KeyMaterial = {
     tokenPeppers: shape.tokenPeppers.map(({ version, key }) => ({ version, key: Buffer.from(key, 'base64') })),
     passwordPepper: { version: shape.passwordPepper.version, key: Buffer.from(shape.passwordPepper.key, 'base64') },
-    internalMacKey: Buffer.from(shape.internalMacKey, 'base64')
+    internalMacKey: Buffer.from(shape.internalMacKey, 'base64'),
+    signingKeys: shape.signingKeys?.map(toSigningKey) ?? [newSigningKey()]
   };
+  if (!shape.signingKeys) writeKeyFile(keyFile, material, 'w');
+  return material;
 }
 
 function ephemeral(persisting = false): KeyMaterial {
@@ -114,6 +166,7 @@ function ephemeral(persisting = false): KeyMaterial {
   return {
     tokenPeppers: [{ version: 1, key: randomBytes(32) }],
     passwordPepper: { version: 1, key: randomBytes(32) },
-    internalMacKey: randomBytes(32)
+    internalMacKey: randomBytes(32),
+    signingKeys: [newSigningKey()]
   };
 }

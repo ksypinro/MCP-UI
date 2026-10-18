@@ -72,11 +72,11 @@ footer{border-top:1px solid var(--line);padding:32px;text-align:center;font-size
   article h2{font-size:24px;margin-top:64px}figure a{padding:14px;border-radius:12px}}
 </style></head><body>
 <div id="progress"></div><div id="lb" role="dialog" aria-modal="true" aria-label="Diagram"><button class="close" type="button" aria-label="Close">×</button><img alt=""></div>
-<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 38 min read</div></header>
+<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 39 min read</div></header>
 <div class="layout">
 <main>
 <section class="hero"><div class="eyebrow">Implementation plan</div><h1>Authentication v2 Implementation Plan</h1>
-<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>38 min read</span></div></section>
+<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>39 min read</span></div></section>
 <article><p><strong>Status:</strong> Proposed · <strong>Date:</strong> 18 October 2026 · <strong>Implements:</strong> <a href="authentication-architecture.md">Authentication Architecture v2</a> · <strong>Codebase:</strong> <code>server/</code> (Node 22+, TypeScript run by type-stripping, Express 5, MCP SDK 1.30, PGlite) and <code>ios/</code> (SwiftUI, iOS 17.0, Swift 5)</p>
 <p>This plan turns the architecture into <strong>46 pull requests across six phases</strong> (six of them are the iOS series 3.6a–f). Every PR is small enough to review in one sitting and ships green. Every behaviour change sits behind a flag or is additive until its phase exit review. Section references such as &quot;arch §7.3&quot; point into the architecture document.</p>
 <hr>
@@ -698,6 +698,16 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <li>Budget refusals and policy refusals are audited outside the transaction, the same pattern as version conflicts today.</li>
 </ul>
 <p><strong>Tests:</strong> an MCP control writes a row naming the client, grant and <code>mcp-rs</code>. A REST control writes one naming <code>api-gw</code>. No token material appears in any column.</p>
+<h3 id="phase-2-as-built">Phase 2 as built</h3>
+<ul>
+<li><strong>No <code>INTERNAL_EXCHANGE</code> flag.</strong> The plan kept the old direct path as a rollback lever until the phase exit. The whole phase shipped as one change, so the rollback is a revert, and no code path to the device rules bypasses the exchange at any point.</li>
+<li><strong>Workload binding in one process</strong> is a random per-boot value carried in <code>cnf.jkt</code>, held only by the adapter&#39;s frozen workload object. There is no ephemeral key pair, because nothing in-process could use one to prove possession. In Profile M the binding becomes the mTLS certificate thumbprint (<code>cnf.x5t#S256</code>) as planned.</li>
+<li><strong>Signing keys</strong> live in the key provider. They come from <code>SIGNING_KEYS</code>, are added to an existing <code>keys.json</code> on the next start, or are generated per process. Per-process keys are accepted even in production while the components share a process, because the signer and the only verifier are the same process.</li>
+<li><strong>The exchange re-verifies the subject token</strong> on every cache miss. That is one extra lookup per grant and scope per minute.</li>
+<li><strong>The per-device budget</strong> is keyed by account and device, across grants. The device is what gets flapped, whoever is doing it.</li>
+<li><strong>Unknown tool names</strong> now answer 401 without a token. An existing test that asserted the opposite was rewritten.</li>
+<li><strong>Migration numbering:</strong> the audit actor chain is migration 009, not 010.</li>
+</ul>
 <p><strong>Phase 2 exit review:</strong></p>
 <ul>
 <li>remove the <code>INTERNAL_EXCHANGE=off</code> path;</li>
@@ -1280,13 +1290,13 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 </ul>
 <h3 id="phase-2">Phase 2</h3>
 <ul>
-<li><input disabled="" type="checkbox"> 2.1 <code>Caller</code> type, unknown tools protected</li>
-<li><input disabled="" type="checkbox"> 2.2 Key provider, signer, JWKS</li>
-<li><input disabled="" type="checkbox"> 2.3 Token exchange</li>
-<li><input disabled="" type="checkbox"> 2.4 Device Service module</li>
-<li><input disabled="" type="checkbox"> 2.5 Adapters through exchange</li>
-<li><input disabled="" type="checkbox"> 2.6 Policy table and write budgets</li>
-<li><input disabled="" type="checkbox"> 2.7 Audit actor chain</li>
+<li><input checked="" disabled="" type="checkbox"> 2.1 <code>Caller</code> type, unknown tools protected</li>
+<li><input checked="" disabled="" type="checkbox"> 2.2 Key provider, signer, JWKS</li>
+<li><input checked="" disabled="" type="checkbox"> 2.3 Token exchange</li>
+<li><input checked="" disabled="" type="checkbox"> 2.4 Device Service module</li>
+<li><input checked="" disabled="" type="checkbox"> 2.5 Adapters through exchange</li>
+<li><input checked="" disabled="" type="checkbox"> 2.6 Policy table and write budgets</li>
+<li><input checked="" disabled="" type="checkbox"> 2.7 Audit actor chain</li>
 </ul>
 <h3 id="phase-3">Phase 3</h3>
 <ul>
@@ -1351,6 +1361,7 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <a class="l3" href="#pr-25-adapters-call-through-exchange-2-d">PR 2.5: Adapters call through exchange · 2 d</a>
 <a class="l3" href="#pr-26-policy-table-and-write-budgets-2-d">PR 2.6: Policy table and write budgets · 2 d</a>
 <a class="l3" href="#pr-27-audit-actor-chain-1-d">PR 2.7: Audit actor chain · 1 d</a>
+<a class="l3" href="#phase-2-as-built">Phase 2 as built</a>
 <a class="l2" href="#7-phase-3-dpop-par-and-the-ios-oauth-client">7. Phase 3: DPoP, PAR and the iOS OAuth client</a>
 <a class="l3" href="#pr-31-dpop-verification-library-3-d">PR 3.1: DPoP verification library · 3 d</a>
 <a class="l3" href="#pr-32-dpop-at-the-authorization-server-2-d">PR 3.2: DPoP at the authorization server · 2 d</a>

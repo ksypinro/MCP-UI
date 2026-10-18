@@ -1,5 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import { annotationsFor } from './policy.ts';
 import {
   ADD_DEVICE_URI, AUTH_URI, UI_MIME, uiResourceMeta, uiResources, uiToolMeta
 } from './ui/index.ts';
@@ -42,9 +43,7 @@ export function registerUi(server: McpServer): void {
           .describe('Which option to lead with. The card offers both regardless.')
       },
       outputSchema: { mode: z.enum(['login', 'signup']), authenticated: z.boolean() },
-      annotations: {
-        readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false
-      },
+      annotations: annotationsFor('show_auth'),
       _meta: uiToolMeta(AUTH_URI)
     },
     async ({ mode }) => ({
@@ -64,9 +63,7 @@ export function registerUi(server: McpServer): void {
         + 'person submits it, which calls add_device.',
       inputSchema: {},
       outputSchema: { ready: z.boolean() },
-      annotations: {
-        readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false
-      },
+      annotations: annotationsFor('show_add_device'),
       _meta: uiToolMeta(ADD_DEVICE_URI)
     },
     async () => ({

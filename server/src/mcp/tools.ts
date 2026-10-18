@@ -1,24 +1,29 @@
 /**
  * The device tools from spec section 8.2.
  *
- * Each one is a thin translation over the same device service the REST API
- * uses — spec section 3 requires one implementation of the business rules, so
- * validation, ownership, version checks and auditing all happen there and are
- * not restated here.
+ * Each one is a thin translation over the Device Service the REST API also
+ * uses — spec section 3 requires one implementation of the business rules,
+ * so validation, ownership, version checks and auditing all happen there and
+ * are not restated here.
  *
  * Reaching any of these handlers means the HTTP gate already verified a token
- * and the scope it needs. The identity check in each handler is defence in
- * depth, not the control.
+ * and the scope it needs. The caller check in each handler is defence in
+ * depth, not the control. The handler never forwards the caller's token: it
+ * exchanges it for an internal one naming this adapter and the single scope
+ * the call needs (exchange-client.ts).
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import type { Db } from '../db/index.ts';
 import { AppError, isAppError } from '../errors.ts';
-import { addDevice, controlDevice, getDevice, listDevices } from '../domain/devices.ts';
 import { getAccount } from '../domain/accounts.ts';
-import type { Device, Identity } from '../domain/types.ts';
+import type { Caller, Device, VerifiedCaller } from '../domain/types.ts';
+import type { DeviceService } from '../device-service/service.ts';
+import type { ExchangeClient } from '../exchange-client.ts';
+import type { WriteBudgets } from '../write-budgets.ts';
 import { SERVER_INFO } from './config.ts';
+import { annotationsFor } from './policy.ts';
 import { DEVICES_URI, DEVICE_URI, uiToolMeta } from './ui/index.ts';
 
 const deviceShape = {
@@ -80,13 +85,35 @@ function toolError(error: unknown, challenge?: string) {
   };
 }
 
-const READ_ONLY = {
-  readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false
-} as const;
+export interface ToolDeps {
+  db: Db;
+  devices: DeviceService;
+  exchange: ExchangeClient;
+  budgets: WriteBudgets;
+}
+
+/**
+ * The verified caller, or the refusal a protected handler returns. The gate
+ * makes the anonymous branch unreachable in practice; if it is ever reached,
+ * the gate has a hole, and this says so rather than quietly serving data.
+ */
+function verifiedOr(caller: Caller): VerifiedCaller | null {
+  return caller.kind === 'verified' ? caller : null;
+}
+
+function unauthenticated(): AppError {
+  return new AppError('UNAUTHENTICATED', 'No verified identity on this request.');
+}
+
+function overBudget(retryAfter: number): AppError {
+  return new AppError('RATE_LIMITED', `Too many changes in a short time. Try again in ${retryAfter} seconds.`);
+}
 
 export function registerDeviceTools(
-  server: McpServer, db: Db, identity: Identity | null, challenge?: string
+  server: McpServer, deps: ToolDeps, caller: Caller, challenge?: string
 ): void {
+  const { db, devices, exchange, budgets } = deps;
+
   server.registerTool(
     'list_devices',
     {
@@ -96,22 +123,24 @@ export function registerDeviceTools(
         + 'version required to change its state.',
       inputSchema: {},
       outputSchema: { devices: z.array(deviceObject) },
-      annotations: READ_ONLY,
+      annotations: annotationsFor('list_devices'),
       _meta: uiToolMeta(DEVICES_URI)
     },
     async () => {
-      if (!identity) return toolError(unauthenticated(), challenge);
+      const verified = verifiedOr(caller);
+      if (!verified) return toolError(unauthenticated(), challenge);
       try {
-        const devices = await listDevices(db, identity);
+        const list = await exchange.run(verified, 'devices:read',
+          (token, peer) => devices.list(token, peer, verified.requestId));
         return {
           content: [{
             type: 'text',
-            text: devices.length === 0
+            text: list.length === 0
               ? 'This account has no devices yet.'
-              : `${devices.length} device${devices.length === 1 ? '' : 's'}: `
-                + devices.map(describe).join(' ')
+              : `${list.length} device${list.length === 1 ? '' : 's'}: `
+                + list.map(describe).join(' ')
           }],
-          structuredContent: { devices }
+          structuredContent: { devices: list }
         };
       } catch (error) {
         return toolError(error);
@@ -128,13 +157,15 @@ export function registerDeviceTools(
         + 'Device ids come from list_devices; never guess one.',
       inputSchema: { deviceId: z.string().min(1).describe('The device id, from list_devices.') },
       outputSchema: { device: deviceObject },
-      annotations: READ_ONLY,
+      annotations: annotationsFor('get_device'),
       _meta: uiToolMeta(DEVICE_URI)
     },
     async ({ deviceId }) => {
-      if (!identity) return toolError(unauthenticated(), challenge);
+      const verified = verifiedOr(caller);
+      if (!verified) return toolError(unauthenticated(), challenge);
       try {
-        const device = await getDevice(db, identity, deviceId);
+        const device = await exchange.run(verified, 'devices:read',
+          (token, peer) => devices.get(token, peer, verified.requestId, deviceId));
         return { content: [{ type: 'text', text: describe(device) }], structuredContent: { device } };
       } catch (error) {
         return toolError(error);
@@ -158,23 +189,19 @@ export function registerDeviceTools(
           .describe('The version from your most recent read of this device.')
       },
       outputSchema: { device: deviceObject },
-      annotations: {
-        readOnlyHint: false,
-        // Nothing is destroyed: a device has two states and either is reachable.
-        destructiveHint: false,
-        // Replaying this call with the same arguments fails with a version
-        // conflict rather than repeating. Annotations are hints, but a
-        // dishonest one invites a host to retry something that cannot be
-        // retried.
-        idempotentHint: false,
-        openWorldHint: false
-      },
+      annotations: annotationsFor('control_device'),
       _meta: { ui: { visibility: ['model', 'app'] } }
     },
     async ({ deviceId, state, expectedVersion }) => {
-      if (!identity) return toolError(unauthenticated(), challenge);
+      const verified = verifiedOr(caller);
+      if (!verified) return toolError(unauthenticated(), challenge);
       try {
-        const device = await controlDevice(db, identity, { deviceId, state, expectedVersion });
+        // A tool error, not an HTTP 429: a transport 429 can make a host
+        // retry on its own, which is the opposite of what a budget is for.
+        const budget = await budgets.spend('control', verified.grantId, `${verified.accountId}:${deviceId}`);
+        if (!budget.ok) return toolError(overBudget(budget.retryAfter));
+        const device = await exchange.run(verified, 'devices:control',
+          (token, peer) => devices.control(token, peer, verified.requestId, { deviceId, state, expectedVersion }));
         return { content: [{ type: 'text', text: describe(device) }], structuredContent: { device } };
       } catch (error) {
         return toolError(error);
@@ -191,20 +218,17 @@ export function registerDeviceTools(
         + 'within the account, ignoring case and surrounding whitespace.',
       inputSchema: { name: z.string().min(1).max(64).describe('A display name, 1 to 64 characters.') },
       outputSchema: { device: deviceObject },
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        // A second identical call fails as a name conflict rather than
-        // creating a second device, so it is not idempotent either.
-        idempotentHint: false,
-        openWorldHint: false
-      },
+      annotations: annotationsFor('add_device'),
       _meta: { ui: { visibility: ['model', 'app'] } }
     },
     async ({ name }) => {
-      if (!identity) return toolError(unauthenticated(), challenge);
+      const verified = verifiedOr(caller);
+      if (!verified) return toolError(unauthenticated(), challenge);
       try {
-        const device = await addDevice(db, identity, { name });
+        const budget = await budgets.spend('create', verified.grantId);
+        if (!budget.ok) return toolError(overBudget(budget.retryAfter));
+        const device = await exchange.run(verified, 'devices:create',
+          (token, peer) => devices.add(token, peer, verified.requestId, { name }));
         return {
           content: [{ type: 'text', text: `Added ${device.name}. It starts Off.` }],
           structuredContent: { device }
@@ -228,14 +252,14 @@ export function registerDeviceTools(
         accountId: z.string().optional(),
         username: z.string().optional()
       },
-      annotations: READ_ONLY,
+      annotations: annotationsFor('get_auth_status'),
       // App-only: the views need it, and the model has no reason to narrate
       // authentication state into a conversation. Spec section 8.2.
       _meta: { ui: { visibility: ['app'] } }
     },
     async () => {
       try {
-        const account = identity ? await getAccount(db, identity.accountId) : null;
+        const account = caller.kind === 'verified' ? await getAccount(db, caller.accountId) : null;
         return {
           content: [{
             type: 'text',
@@ -253,13 +277,6 @@ export function registerDeviceTools(
       }
     }
   );
-}
-
-function unauthenticated(): AppError {
-  // Unreachable in practice: the gate refuses these calls at the transport
-  // layer. If it is ever reached, the gate has a hole, and this says so
-  // rather than quietly serving data.
-  return new AppError('UNAUTHENTICATED', 'No verified identity on this request.');
 }
 
 export { SERVER_INFO };

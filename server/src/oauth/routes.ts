@@ -2,6 +2,7 @@ import { Router, type Request, type Response } from 'express';
 import type { Db } from '../db/index.ts';
 import { rateLimit } from '../http/middleware.ts';
 import { metadataRouter } from './metadata.ts';
+import { jwksRouter } from './jwks.ts';
 import { authorizeRoutes } from './authorize.ts';
 import { tokenRoutes } from './token.ts';
 import { registerClient } from './clients.ts';
@@ -11,6 +12,7 @@ export function oauthRoutes(db: Db): Router {
   const router = Router();
 
   router.use(metadataRouter);
+  router.use(jwksRouter);
 
   // Rate limiting is applied per route, not across the board.
   //

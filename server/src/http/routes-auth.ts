@@ -6,7 +6,7 @@ import { AppError } from '../errors.ts';
 import { createAccount, getAccount, verifyCredentials } from '../domain/accounts.ts';
 import { refreshSession, revokeSession, startSession } from '../domain/sessions.ts';
 import { createHash } from 'node:crypto';
-import { authenticate, context, identityOf, rateLimit } from './middleware.ts';
+import { authenticate, callerOf, context, rateLimit } from './middleware.ts';
 
 export function authRoutes(db: Db): Router {
   const router = Router();
@@ -47,7 +47,7 @@ export function authRoutes(db: Db): Router {
   });
 
   router.get('/v1/auth/me', authenticate(db, { required: true }), async (_req, res) => {
-    const account = await getAccount(db, identityOf(res).accountId);
+    const account = await getAccount(db, callerOf(res).accountId);
     if (!account) throw new AppError('UNAUTHENTICATED');
     res.json({ account });
   });

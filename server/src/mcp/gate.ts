@@ -14,8 +14,8 @@ import type { Db } from '../db/index.ts';
 import { MCP_BASE_URL } from '../config.ts';
 import { SCOPES_SUPPORTED, type Scope } from '../oauth/config.ts';
 import { verifyOAuthAccessToken } from '../oauth/verify.ts';
-import { requiredScopeFor } from './config.ts';
-import type { Identity } from '../domain/types.ts';
+import { policyFor } from './policy.ts';
+import type { Caller } from '../domain/types.ts';
 import { AppError } from '../errors.ts';
 import type { BucketResult } from '../security/rate-limit.ts';
 
@@ -45,10 +45,13 @@ export function protectedCallsIn(body: unknown): { tools: string[]; scopes: Scop
     if (method !== 'tools/call') continue;
     const name = params?.name;
     if (typeof name !== 'string') continue;
-    const scope = requiredScopeFor(name);
-    if (!scope) continue;
+    const policy = policyFor(name);
+    // A name this server does not have is treated as protected, so the
+    // answer to an unknown tool without a token is a challenge, never an
+    // anonymous run. With a token, the SDK reports the tool as unknown.
+    if (policy && !policy.scope) continue;
     tools.push(name);
-    scopes.add(scope);
+    if (policy?.scope) scopes.add(policy.scope);
   }
 
   return { tools, scopes: [...scopes] };
@@ -94,7 +97,7 @@ export interface GateLimits {
 }
 
 export type GateOutcome =
-  | { proceed: true; identity: Identity | null; challenge?: string }
+  | { proceed: true; caller: Caller; challenge?: string }
   | { proceed: false };
 
 /**
@@ -129,17 +132,21 @@ export async function gate(
     throw new AppError('RATE_LIMITED');
   }
 
-  const identity: Identity | null = verified?.ok
-    ? { accountId: verified.accountId, channel: 'mcp', requestId }
-    : null;
+  const anonymous: Caller = { kind: 'anonymous', requestId };
+  const caller: Caller = verified?.ok && token
+    ? {
+        kind: 'verified', accountId: verified.accountId, clientId: verified.clientId,
+        grantId: verified.grantId, channel: 'mcp', scopes: verified.scopes, requestId, credential: token
+      }
+    : anonymous;
 
   // Public calls behave differently for a signed-in caller, and
-  // get_auth_status exists to say so, so the identity is still passed on.
-  if (wanted.tools.length === 0) return { proceed: true, identity };
+  // get_auth_status exists to say so, so the caller is still passed on.
+  if (wanted.tools.length === 0) return { proceed: true, caller };
 
   // The union: a batch is authorized only if the token can make every
   // protected call in it.
-  if (identity) return { proceed: true, identity };
+  if (caller.kind === 'verified') return { proceed: true, caller };
 
   const insufficient = verified?.ok === false && verified.reason === 'insufficient_scope';
   const error = insufficient ? 'insufficient_scope' : 'invalid_token';
@@ -148,10 +155,10 @@ export async function gate(
     : 'Authentication required for this tool';
 
   if (wantsToolChallenge(req)) {
-    // Proceed with no identity: every protected handler then refuses, and
-    // carries the challenge. Never with the token's identity — a token short
-    // of scope must not reach a handler that trusts the gate for scope.
-    return { proceed: true, identity: null, challenge: challengeValue(error, description, SCOPES_SUPPORTED) };
+    // Proceed anonymously: every protected handler then refuses, and carries
+    // the challenge. Never as the token's caller — a token short of scope
+    // must not reach a handler that trusts the gate for scope.
+    return { proceed: true, caller: anonymous, challenge: challengeValue(error, description, SCOPES_SUPPORTED) };
   }
 
   // Name every scope the integration needs, not just the missing one: a

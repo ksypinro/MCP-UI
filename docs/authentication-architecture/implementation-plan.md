@@ -573,6 +573,16 @@ export async function exchange(db: Db, keys: KeyProvider, req: {
 
 **Tests:** an MCP control writes a row naming the client, grant and `mcp-rs`. A REST control writes one naming `api-gw`. No token material appears in any column.
 
+### Phase 2 as built
+
+- **No `INTERNAL_EXCHANGE` flag.** The plan kept the old direct path as a rollback lever until the phase exit. The whole phase shipped as one change, so the rollback is a revert, and no code path to the device rules bypasses the exchange at any point.
+- **Workload binding in one process** is a random per-boot value carried in `cnf.jkt`, held only by the adapter's frozen workload object. There is no ephemeral key pair, because nothing in-process could use one to prove possession. In Profile M the binding becomes the mTLS certificate thumbprint (`cnf.x5t#S256`) as planned.
+- **Signing keys** live in the key provider. They come from `SIGNING_KEYS`, are added to an existing `keys.json` on the next start, or are generated per process. Per-process keys are accepted even in production while the components share a process, because the signer and the only verifier are the same process.
+- **The exchange re-verifies the subject token** on every cache miss. That is one extra lookup per grant and scope per minute.
+- **The per-device budget** is keyed by account and device, across grants. The device is what gets flapped, whoever is doing it.
+- **Unknown tool names** now answer 401 without a token. An existing test that asserted the opposite was rewritten.
+- **Migration numbering:** the audit actor chain is migration 009, not 010.
+
 **Phase 2 exit review:**
 - remove the `INTERNAL_EXCHANGE=off` path;
 - run the review probe "can any code path reach `domain/devices.ts` without a verified token B?";
@@ -899,13 +909,13 @@ Extended in phase 1 and rerun at every phase exit, with results recorded in `spi
 - [x] 1.8 Password pepper
 
 ### Phase 2
-- [ ] 2.1 `Caller` type, unknown tools protected
-- [ ] 2.2 Key provider, signer, JWKS
-- [ ] 2.3 Token exchange
-- [ ] 2.4 Device Service module
-- [ ] 2.5 Adapters through exchange
-- [ ] 2.6 Policy table and write budgets
-- [ ] 2.7 Audit actor chain
+- [x] 2.1 `Caller` type, unknown tools protected
+- [x] 2.2 Key provider, signer, JWKS
+- [x] 2.3 Token exchange
+- [x] 2.4 Device Service module
+- [x] 2.5 Adapters through exchange
+- [x] 2.6 Policy table and write budgets
+- [x] 2.7 Audit actor chain
 
 ### Phase 3
 - [ ] 3.1 DPoP library

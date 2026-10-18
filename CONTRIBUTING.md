@@ -10,7 +10,7 @@ few things that matter here.
 ```bash
 cd server
 npm install
-npm test             # 203 tests, nothing to provision
+npm test             # 221 tests, nothing to provision
 npm run typecheck
 ```
 

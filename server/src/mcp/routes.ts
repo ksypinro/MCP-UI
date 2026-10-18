@@ -14,23 +14,24 @@ import { context } from '../http/middleware.ts';
 import { MemoryBucketStore, bucket } from '../security/rate-limit.ts';
 import { MCP_PATH, SERVER_INFO } from './config.ts';
 import { gate, type GateLimits } from './gate.ts';
-import { registerDeviceTools } from './tools.ts';
+import { registerDeviceTools, type ToolDeps } from './tools.ts';
 import { registerUi } from './resources.ts';
 import { exposeSecuritySchemes } from './security-schemes.ts';
 import { protectedResourceMetadataRouter } from '../oauth/metadata.ts';
-import type { Identity } from '../domain/types.ts';
+import type { Caller } from '../domain/types.ts';
 
-function buildServer(db: Db, identity: Identity | null, challenge: string | undefined): McpServer {
+function buildServer(deps: ToolDeps, caller: Caller, challenge: string | undefined): McpServer {
   const server = new McpServer(SERVER_INFO, {
     capabilities: { tools: {}, resources: {} }
   });
-  registerDeviceTools(server, db, identity, challenge);
+  registerDeviceTools(server, deps, caller, challenge);
   registerUi(server);
   exposeSecuritySchemes(server);
   return server;
 }
 
-export function mcpRoutes(db: Db): Router {
+export function mcpRoutes(deps: ToolDeps): Router {
+  const { db } = deps;
   const router = Router();
 
   // Protected resource metadata belongs to the resource, so it is served from
@@ -69,7 +70,7 @@ export function mcpRoutes(db: Db): Router {
     });
     res.on('close', () => { void transport.close(); });
 
-    const server = buildServer(db, outcome.identity, outcome.challenge);
+    const server = buildServer(deps, outcome.caller, outcome.challenge);
     await server.connect(transport);
     await transport.handleRequest(req, res, req.body);
   });
