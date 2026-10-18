@@ -442,6 +442,19 @@ export function wellFormed(kind: Kind, token: string): boolean { /* prefix, leng
 
 **Tests:** old hash logs in and is upgraded. A new hash is not verifiable without the pepper. The decoy-hash timing path uses the same parameters.
 
+### Phase 1 as built
+
+Where the build departed from the PRs above, and why.
+
+- **1.1:** host routing compares the `Host` header with each origin's host. Building it found that the device router authenticated *every* request reaching it, so unknown paths anywhere answered 401 instead of 404. That is now scoped to `/v1/devices`. `host-check` keeps its single-origin mode; three tunnel hostnames are deferred until a deployment exists.
+- **1.2:** hash columns keep their names (`token_hash`, `code_hash`), and there is no `pepper_version` column. Lookups use the set of digests under every configured pepper (`= ANY($1::text[])`), which handles rotation without one. `reloadKeysForRotation()` makes a new pepper take effect. Migrations are numbered 005 (keyed hashes, truncating), 006 (password pepper), 007 (CIMD cache and DCR metadata) and 008 (sessions and consent).
+- **1.3 and 1.4:** one CSRF token per pending authorization and browser, `HMAC(pending id, binding cookie)`, serves the sign-in, consent, deny and logout forms. `POST /authorize` is gone. The steps are `/login`, `/consent`, `/consent/deny` (with `/authorize/cancel` kept as an alias) and `/logout`. Remembered consent lasts 30 days for unverified metadata-document clients and a year for verified ones.
+- **1.5:** the in-memory document cache from 0.2 is replaced by the `cimd_cache` table. Its lifetime comes from the document's `Cache-Control`, clamped to between 60 s and 24 h, with 5 minutes when absent. The size cap now counts bytes, not decoded characters. The fetcher is injectable so tests can serve documents without a public address.
+- **1.6:** `application_type` follows OpenID Connect. `web` clients need https on a non-loopback host. `native` clients may use loopback http, a private-use scheme or https.
+- **1.7:** with `REQUIRE_OFFLINE_ACCESS_FOR_REFRESH` false (the default), every grant still gets a refresh token. `offline_access` is advertised and recorded either way.
+- **1.8:** the optional breached-password check is not built.
+- **Harnesses:** `client-check` and `mock-host` sign in through a shared helper (`tools/lib/sign-in.mjs`) that keeps the binding and session cookies. `client-check` passes 18 of 18 against the new flow with the real MCP SDK client.
+
 **Phase 1 exit review:** `npm run host-check` against Claude and ChatGPT, with a full connect, consent and tool call on each, recorded in `spike/FINDINGS.md`. The acceptance report gains AC-29 to AC-33 (§9.3).
 
 ---
@@ -876,14 +889,14 @@ Extended in phase 1 and rerun at every phase exit, with results recorded in `spi
 - [x] 0.8 Documentation corrections
 
 ### Phase 1
-- [ ] 1.1 Three hostnames
-- [ ] 1.2 Token format and HMAC storage
-- [ ] 1.3 Cookies, AS session, CSRF, pending binding
-- [ ] 1.4 Login and consent split, consent registry
-- [ ] 1.5 CIMD hardening and cache
-- [ ] 1.6 DCR hardening
-- [ ] 1.7 `offline_access` and metadata
-- [ ] 1.8 Password pepper
+- [x] 1.1 Three hostnames
+- [x] 1.2 Token format and HMAC storage
+- [x] 1.3 Cookies, AS session, CSRF, pending binding
+- [x] 1.4 Login and consent split, consent registry
+- [x] 1.5 CIMD hardening and cache
+- [x] 1.6 DCR hardening
+- [x] 1.7 `offline_access` and metadata
+- [x] 1.8 Password pepper
 
 ### Phase 2
 - [ ] 2.1 `Caller` type, unknown tools protected

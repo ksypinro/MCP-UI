@@ -28,7 +28,7 @@ graph LR
 | [`requirement.md`](./requirement.md) | The specification everything implements |
 | [`docs/`](./docs) | Architecture, code flow, sequence diagrams, testing |
 
-Roughly 13,700 lines, 227 tests.
+Roughly 15,400 lines, 252 tests.
 
 ---
 
@@ -41,7 +41,7 @@ Xcode 16+ only if you want the iOS app.
 cd server
 npm install
 npm start            # http://localhost:4000
-npm test             # 178 tests
+npm test             # 203 tests
 ```
 
 Nothing to provision. The store is [PGlite](https://pglite.dev) — real
@@ -183,7 +183,14 @@ Plus `/v1/auth/{signup,login,me,refresh,logout}`, the OAuth endpoints, and
 | Variable | Default | |
 | --- | --- | --- |
 | `PORT` | `4000` | |
-| `BASE_URL` | `http://localhost:$PORT` | **Must match the registered connector URL exactly.** Becomes the OAuth issuer, the RFC 8707 resource indicator and the token audience |
+| `BASE_URL` | `http://localhost:$PORT` | **Must match the registered connector URL exactly.** Default for the three origins below |
+| `AUTH_BASE_URL` | `BASE_URL` | The authorization server's origin: the OAuth issuer. Final before launch, because hosts key their client registration by it |
+| `MCP_BASE_URL` | `BASE_URL` | The MCP endpoint's origin: `/mcp` here is the RFC 8707 resource and the token audience |
+| `API_BASE_URL` | `BASE_URL` | The REST API's origin. With three distinct origins each surface answers only on its own host |
+| `TOKEN_PEPPERS`, `PASSWORD_PEPPER`, `INTERNAL_MAC_KEY` | a key file | Key material, all three or none. Unset, the server keeps `keys.json` beside the database. **Back it up: losing it makes every stored password unverifiable** |
+| `KNOWN_CLIENTS` | ChatGPT's CIMD URL | Metadata-document clients shown as verified on the consent screen |
+| `REQUIRE_OFFLINE_ACCESS_FOR_REFRESH` | `false` | Issue refresh tokens only to clients that ask for `offline_access` |
+| `ARGON2_MEMORY_KIB`, `ARGON2_TIME_COST` | `65536`, `3` | Password hashing cost |
 | `DATABASE_PATH` | `./.data` | Delete it to reset |
 | `ACCESS_TOKEN_TTL_SECONDS` | `900` | |
 | `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | |
@@ -197,8 +204,8 @@ Plus `/v1/auth/{signup,login,me,refresh,logout}`, the OAuth endpoints, and
 
 ## Status
 
-227 tests pass. `npm run acceptance` reports **21 of 30** acceptance criteria
-proven, 6 partial, 3 open. Two of the thirty (AC-29, AC-30) come from the
+252 tests pass. `npm run acceptance` reports **24 of 33** acceptance criteria
+proven, 6 partial, 3 open. Five of the thirty-three (AC-29 to AC-33) come from the
 [authentication redesign](./docs/authentication-architecture/authentication-architecture.md)
 rather than the specification.
 

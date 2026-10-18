@@ -1,17 +1,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 
-/**
- * SHA-256, not Argon2. Codes and tokens are 256-bit random values, not
- * user-chosen secrets: there is nothing to brute-force, and a slow hash on
- * every request would buy nothing while costing latency.
- */
-export function fingerprint(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
-
-export function newSecret(bytes = 32): string {
-  return randomBytes(bytes).toString('base64url');
-}
+// Tokens and codes are minted by tokens/format.ts and stored by
+// tokens/hash.ts. Identifiers that are not secrets are minted here.
 
 export function newId(prefix: string): string {
   return `${prefix}_${randomBytes(12).toString('base64url')}`;

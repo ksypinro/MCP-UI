@@ -17,6 +17,7 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@node-rs/argon2": "^2.0.2",
     "express": "^5.1.0",
+    "ipaddr.js": "2.2.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {

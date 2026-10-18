@@ -216,5 +216,96 @@ export const MIGRATIONS: Migration[] = [
       -- being treated as theft; see rotateRefresh in oauth/store.ts.
       ALTER TABLE oauth_refresh_tokens ADD COLUMN replaced_at timestamptz;
     `
+  },
+  {
+    name: '005_keyed_token_hashes',
+    sql: `
+      -- Every *_hash column holding a token, code or refresh token now holds
+      -- HMAC-SHA256 under a pepper kept outside the database
+      -- (security/keys.ts), and tokens carry a typed prefix and checksum
+      -- (tokens/format.ts). Hashes written the old way can never match again,
+      -- so they are removed rather than left as dead rows. Accounts and
+      -- devices are untouched; everyone signs in once more.
+      --
+      -- Safe only because nothing has been deployed. After launch, a change
+      -- like this needs a dual-read period instead.
+      TRUNCATE access_tokens, sessions,
+               oauth_access_tokens, oauth_refresh_tokens, oauth_authorization_codes,
+               oauth_pending_authorizations, oauth_grants;
+    `
+  },
+  {
+    name: '006_password_pepper',
+    sql: `
+      -- Which password pepper a hash was made under. NULL marks a hash from
+      -- before peppering: it still verifies against the raw password and is
+      -- rehashed on the next successful login.
+      ALTER TABLE accounts ADD COLUMN password_pepper_version smallint;
+    `
+  },
+  {
+    name: '007_cimd_cache_and_dcr_metadata',
+    sql: `
+      -- Client ID Metadata Documents that resolved, reused until their own
+      -- Cache-Control says otherwise (clamped to a day). The digest ties a
+      -- remembered consent to the exact document the person approved.
+      CREATE TABLE cimd_cache (
+        client_id     text PRIMARY KEY,
+        redirect_uris text NOT NULL,          -- JSON array
+        display_host  text NOT NULL,
+        digest        text NOT NULL,
+        fetched_at    timestamptz NOT NULL,
+        expires_at    timestamptz NOT NULL
+      );
+
+      -- MCP 2026-07-28 requires DCR clients to send application_type.
+      ALTER TABLE oauth_clients ADD COLUMN application_type text;
+    `
+  },
+  {
+    name: '008_as_sessions_and_consent',
+    sql: `
+      -- The authorization server's own browser session. Stored as a keyed
+      -- hash like every other credential; see oauth/session.ts.
+      CREATE TABLE as_sessions (
+        id_hash             text PRIMARY KEY,
+        account_id          text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        auth_time           timestamptz NOT NULL,
+        acr                 text NOT NULL,
+        idle_expires_at     timestamptz NOT NULL,
+        absolute_expires_at timestamptz NOT NULL,
+        revoked_at          timestamptz,
+        created_at          timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE INDEX as_sessions_account_idx ON as_sessions (account_id);
+
+      -- What a person has approved, per client and redirect host. Remembered
+      -- only for clients identified by a metadata document or registered by
+      -- us, never for dynamically registered ones; see oauth/consents.ts.
+      CREATE TABLE consents (
+        id              text PRIMARY KEY,
+        account_id      text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        client_id       text NOT NULL,
+        redirect_host   text NOT NULL,
+        scopes          text NOT NULL,
+        document_digest text,
+        granted_at      timestamptz NOT NULL DEFAULT now(),
+        CONSTRAINT consents_account_client_host_key UNIQUE (account_id, client_id, redirect_host)
+      );
+
+      -- The pending flow remembers what was resolved about the client, and
+      -- which browser started it.
+      ALTER TABLE oauth_pending_authorizations
+        ADD COLUMN client_kind     text NOT NULL DEFAULT 'dcr',
+        ADD COLUMN client_trust    text NOT NULL DEFAULT 'unverified',
+        ADD COLUMN document_digest text,
+        ADD COLUMN offline_access  boolean NOT NULL DEFAULT false,
+        ADD COLUMN binding_hash    text NOT NULL DEFAULT '';
+
+      ALTER TABLE oauth_authorization_codes
+        ADD COLUMN offline_access boolean NOT NULL DEFAULT false,
+        ADD COLUMN auth_time      timestamptz,
+        ADD COLUMN consent_id     text;
+    `
   }
 ];

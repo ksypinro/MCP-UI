@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import { createDb } from '../src/db/index.ts';
 import { createApp } from '../src/http/app.ts';
-import { CimdCache, cimdFetchAllowed } from '../src/oauth/clients.ts';
+import { cimdCacheSeconds, cimdFetchAllowed } from '../src/oauth/clients.ts';
 
 test('showing the authorization page is rate limited by address', async () => {
   process.env.AUTHORIZE_VIEW_RATE_LIMIT_PER_MINUTE = '5';
@@ -41,20 +41,11 @@ test('client metadata fetches are budgeted per host', async () => {
   assert.equal(await cimdFetchAllowed('other.example'), true, 'the budget is per host');
 });
 
-test('resolved client documents are cached briefly and bounded', () => {
-  let now = 1_000;
-  const cache = new CimdCache({ ttlMs: 300_000, maxEntries: 2, now: () => now });
-  const client = (id: string) => ({ clientId: id, redirectUris: ['https://a.example/cb'], displayHost: 'a.example' });
-
-  cache.set('https://a.example/1', client('https://a.example/1'));
-  assert.equal(cache.get('https://a.example/1')?.clientId, 'https://a.example/1');
-
-  now += 300_001;
-  assert.equal(cache.get('https://a.example/1'), null, 'expired entries are not served');
-
-  cache.set('https://a.example/2', client('https://a.example/2'));
-  cache.set('https://a.example/3', client('https://a.example/3'));
-  cache.set('https://a.example/4', client('https://a.example/4'));
-  assert.equal(cache.get('https://a.example/2'), null, 'the oldest entry is evicted at the bound');
-  assert.ok(cache.get('https://a.example/4'));
+test('a document is reused for as long as it asks, within a day', () => {
+  assert.equal(cimdCacheSeconds(null), 300, 'silence means five minutes');
+  assert.equal(cimdCacheSeconds('public, max-age=3600'), 3600);
+  assert.equal(cimdCacheSeconds('max-age=5'), 60, 'never refetched more than once a minute');
+  assert.equal(cimdCacheSeconds('max-age=31536000'), 86_400, 'never trusted for more than a day');
+  assert.equal(cimdCacheSeconds('no-store'), 0);
+  assert.equal(cimdCacheSeconds('private, no-cache'), 0);
 });

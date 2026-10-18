@@ -1,10 +1,14 @@
 /**
- * The hosted authorization page.
+ * The hosted authorization pages: sign-in, then approval.
  *
  * Spec section 7.4: this is the only place a credential is ever typed. It is
  * server-rendered and entirely outside MCP — no tool sees it, no model sees
  * it, and nothing from it is returned to the client except an authorization
  * code on the registered redirect URI.
+ *
+ * Signing in and approving are separate steps. Signing in proves who the
+ * person is, once per browser session; approving names what this particular
+ * application is about to receive, every time it is not already remembered.
  */
 
 import type { Scope } from './config.ts';
@@ -21,15 +25,29 @@ const SCOPE_DESCRIPTIONS: Record<Scope, string> = {
   'devices:create': 'Add new devices to your account'
 };
 
-export interface AuthorizePageOptions {
+export interface LoginPageOptions {
   /** CSP nonce for the inline stylesheet; see security/headers.ts. */
   nonce: string;
   pendingId: string;
+  csrf: string;
   clientHost: string;
-  scopes: Scope[];
   mode: 'login' | 'signup';
+  /** Signing in again because approving write access needs a recent sign-in. */
+  reauth?: boolean;
   error?: string;
   username?: string;
+}
+
+export interface ConsentPageOptions {
+  nonce: string;
+  pendingId: string;
+  csrf: string;
+  username: string;
+  clientHost: string;
+  clientKind: 'cimd' | 'dcr' | 'preregistered';
+  clientTrust: 'verified' | 'unverified';
+  redirectUri: string;
+  scopes: Scope[];
 }
 
 const STYLES = `
@@ -91,47 +109,64 @@ const STYLES = `
   .grant ul { margin: 0; padding-left: 20px; font-size: 14px; color: var(--muted); }
   .grant li { margin: 3px 0; }
   .host { font-weight: 600; word-break: break-all; }
+  .badge {
+    display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px;
+    border-radius: 999px; margin-left: 6px; vertical-align: 1px;
+  }
+  .badge.verified { background: #e3f3e8; color: #1d5b33; }
+  .badge.unverified { background: var(--danger-bg); color: var(--danger-fg); }
+  .note { font-size: 13px; color: var(--muted); margin: 10px 0 0; }
+  .destination { font-size: 13px; margin: 12px 0 0; word-break: break-all; }
+  .actions { display: grid; gap: 10px; }
+  .secondary { background: none; color: var(--fg); border: 1px solid var(--line); }
+  .signout { text-align: center; margin-top: 16px; font-size: 13px; color: var(--muted); }
+  .signout button {
+    display: inline; width: auto; padding: 0; background: none; color: var(--muted);
+    font-size: 13px; font-weight: 400; text-decoration: underline;
+  }
 `;
 
-export function renderAuthorizePage(options: AuthorizePageOptions): string {
-  const { nonce, pendingId, clientHost, scopes, mode, error, username = '' } = options;
-  const isSignUp = mode === 'signup';
-  const id = encodeURIComponent(pendingId);
-
+function head(nonce: string, title: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
-<title>${isSignUp ? 'Sign up' : 'Log in'} to IoT Switch</title>
+<title>${escapeHtml(title)}</title>
 <style nonce="${escapeHtml(nonce)}">${STYLES}</style>
-</head>
+</head>`;
+}
+
+export function renderLoginPage(options: LoginPageOptions): string {
+  const { nonce, pendingId, csrf, clientHost, mode, reauth, error, username = '' } = options;
+  const isSignUp = mode === 'signup';
+  const id = encodeURIComponent(pendingId);
+  const lede = reauth
+    ? 'Approving write access needs a recent sign-in. Sign in again to continue.'
+    : isSignUp
+      ? 'Create an account to connect your devices.'
+      : 'Log in to connect your devices.';
+
+  return `${head(nonce, `${isSignUp ? 'Sign up' : 'Log in'} to IoT Switch`)}
 <body>
   <main class="card">
     <h1>IoT Switch</h1>
-    <p class="lede">${isSignUp
-      ? 'Create an account to connect your devices.'
-      : 'Log in to connect your devices.'}</p>
+    <p class="lede">${lede}</p>
+    <p class="lede">Continuing to <span class="host">${escapeHtml(clientHost)}</span>. You will see exactly what it is asking for before anything is shared.</p>
 
-    <div class="grant">
-      <p><span class="host">${escapeHtml(clientHost)}</span> is asking to:</p>
-      <ul>
-        ${scopes.map((scope) => `<li>${escapeHtml(SCOPE_DESCRIPTIONS[scope] ?? scope)}</li>`).join('\n        ')}
-      </ul>
-    </div>
-
-    <nav class="tabs">
-      <a href="/authorize?pending=${id}&amp;mode=login"
+    ${reauth ? '' : `<nav class="tabs">
+      <a href="/login?pending=${id}&amp;mode=login"
          ${!isSignUp ? 'aria-current="page"' : ''}>Log In</a>
-      <a href="/authorize?pending=${id}&amp;mode=signup"
+      <a href="/login?pending=${id}&amp;mode=signup"
          ${isSignUp ? 'aria-current="page"' : ''}>Sign Up</a>
-    </nav>
+    </nav>`}
 
     ${error ? `<p class="error" role="alert">${escapeHtml(error)}</p>` : ''}
 
-    <form method="post" action="/authorize">
+    <form method="post" action="/login">
       <input type="hidden" name="pending" value="${escapeHtml(pendingId)}">
+      <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
       <input type="hidden" name="mode" value="${isSignUp ? 'signup' : 'login'}">
 
       <label for="username">Username</label>
@@ -146,9 +181,76 @@ export function renderAuthorizePage(options: AuthorizePageOptions): string {
       <button type="submit">${isSignUp ? 'Sign Up and Continue' : 'Log In and Continue'}</button>
     </form>
 
-    <form method="post" action="/authorize/cancel">
+    <form method="post" action="/consent/deny">
       <input type="hidden" name="pending" value="${escapeHtml(pendingId)}">
+      <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
       <button type="submit" class="cancel">Cancel</button>
+    </form>
+  </main>
+</body>
+</html>`;
+}
+
+export function renderConsentPage(options: ConsentPageOptions): string {
+  const { nonce, pendingId, csrf, username, clientHost, clientKind, clientTrust, redirectUri, scopes } = options;
+  const destination = new URL(redirectUri);
+  const loopback = ['127.0.0.1', 'localhost', '[::1]'].includes(destination.hostname);
+
+  const badge = clientTrust === 'verified'
+    ? '<span class="badge verified">Verified</span>'
+    : '<span class="badge unverified">Unverified</span>';
+
+  // What can honestly be said about who this is. A metadata-document client
+  // is identified by the host that serves its document; a dynamically
+  // registered one by nothing at all, so the only thing worth showing is
+  // exactly where the approval will be sent.
+  const identity = clientKind === 'dcr'
+    ? '<p class="note">This application registered itself and has not been verified. Its name could be anything; check the address below.</p>'
+    : clientTrust === 'unverified'
+      ? '<p class="note">This application is identified by the website that publishes it. It has not been verified by IoT Switch.</p>'
+      : '';
+
+  const where = clientKind === 'dcr'
+    ? `<p class="destination">You will be sent to <span class="host">${escapeHtml(redirectUri)}</span></p>`
+    : `<p class="destination">You will be sent back to <span class="host">${escapeHtml(destination.host || destination.protocol)}</span></p>`;
+
+  const loopbackWarning = loopback
+    ? '<p class="note">This sends you back to a program running on this computer. Only continue if you started it.</p>'
+    : '';
+
+  return `${head(nonce, 'Allow access to IoT Switch?')}
+<body>
+  <main class="card">
+    <h1>Allow access?</h1>
+    <p class="lede">Signed in as <span class="host">${escapeHtml(username)}</span></p>
+
+    <div class="grant">
+      <p><span class="host">${escapeHtml(clientHost)}</span>${badge} is asking to:</p>
+      <ul>
+        ${scopes.map((scope) => `<li>${escapeHtml(SCOPE_DESCRIPTIONS[scope] ?? scope)}</li>`).join('\n        ')}
+      </ul>
+      ${identity}
+      ${where}
+      ${loopbackWarning}
+    </div>
+
+    <div class="actions">
+      <form method="post" action="/consent">
+        <input type="hidden" name="pending" value="${escapeHtml(pendingId)}">
+        <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+        <button type="submit">Allow</button>
+      </form>
+      <form method="post" action="/consent/deny">
+        <input type="hidden" name="pending" value="${escapeHtml(pendingId)}">
+        <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+        <button type="submit" class="secondary">Deny</button>
+      </form>
+    </div>
+
+    <form method="post" action="/logout" class="signout">
+      <input type="hidden" name="pending" value="${escapeHtml(pendingId)}">
+      <input type="hidden" name="csrf" value="${escapeHtml(csrf)}">
+      Not ${escapeHtml(username)}? <button type="submit">Sign out</button>
     </form>
   </main>
 </body>

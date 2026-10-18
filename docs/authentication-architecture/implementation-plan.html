@@ -72,11 +72,11 @@ footer{border-top:1px solid var(--line);padding:32px;text-align:center;font-size
   article h2{font-size:24px;margin-top:64px}figure a{padding:14px;border-radius:12px}}
 </style></head><body>
 <div id="progress"></div><div id="lb" role="dialog" aria-modal="true" aria-label="Diagram"><button class="close" type="button" aria-label="Close">×</button><img alt=""></div>
-<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 36 min read</div></header>
+<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 38 min read</div></header>
 <div class="layout">
 <main>
 <section class="hero"><div class="eyebrow">Implementation plan</div><h1>Authentication v2 Implementation Plan</h1>
-<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>36 min read</span></div></section>
+<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>38 min read</span></div></section>
 <article><p><strong>Status:</strong> Proposed · <strong>Date:</strong> 18 October 2026 · <strong>Implements:</strong> <a href="authentication-architecture.md">Authentication Architecture v2</a> · <strong>Codebase:</strong> <code>server/</code> (Node 22+, TypeScript run by type-stripping, Express 5, MCP SDK 1.30, PGlite) and <code>ios/</code> (SwiftUI, iOS 17.0, Swift 5)</p>
 <p>This plan turns the architecture into <strong>46 pull requests across six phases</strong> (six of them are the iOS series 3.6a–f). Every PR is small enough to review in one sitting and ships green. Every behaviour change sits behind a flag or is additive until its phase exit review. Section references such as &quot;arch §7.3&quot; point into the architecture document.</p>
 <hr>
@@ -572,6 +572,18 @@ export function wellFormed(kind: Kind, token: string): boolean { /* prefix, leng
 <li><strong>[Optional]</strong> breached-password check with the HIBP k-anonymity range API, behind <code>BREACHED_PASSWORD_CHECK</code> (outbound through the egress fetcher).</li>
 </ul>
 <p><strong>Tests:</strong> old hash logs in and is upgraded. A new hash is not verifiable without the pepper. The decoy-hash timing path uses the same parameters.</p>
+<h3 id="phase-1-as-built">Phase 1 as built</h3>
+<p>Where the build departed from the PRs above, and why.</p>
+<ul>
+<li><strong>1.1:</strong> host routing compares the <code>Host</code> header with each origin&#39;s host. Building it found that the device router authenticated <em>every</em> request reaching it, so unknown paths anywhere answered 401 instead of 404. That is now scoped to <code>/v1/devices</code>. <code>host-check</code> keeps its single-origin mode; three tunnel hostnames are deferred until a deployment exists.</li>
+<li><strong>1.2:</strong> hash columns keep their names (<code>token_hash</code>, <code>code_hash</code>), and there is no <code>pepper_version</code> column. Lookups use the set of digests under every configured pepper (<code>= ANY($1::text[])</code>), which handles rotation without one. <code>reloadKeysForRotation()</code> makes a new pepper take effect. Migrations are numbered 005 (keyed hashes, truncating), 006 (password pepper), 007 (CIMD cache and DCR metadata) and 008 (sessions and consent).</li>
+<li><strong>1.3 and 1.4:</strong> one CSRF token per pending authorization and browser, <code>HMAC(pending id, binding cookie)</code>, serves the sign-in, consent, deny and logout forms. <code>POST /authorize</code> is gone. The steps are <code>/login</code>, <code>/consent</code>, <code>/consent/deny</code> (with <code>/authorize/cancel</code> kept as an alias) and <code>/logout</code>. Remembered consent lasts 30 days for unverified metadata-document clients and a year for verified ones.</li>
+<li><strong>1.5:</strong> the in-memory document cache from 0.2 is replaced by the <code>cimd_cache</code> table. Its lifetime comes from the document&#39;s <code>Cache-Control</code>, clamped to between 60 s and 24 h, with 5 minutes when absent. The size cap now counts bytes, not decoded characters. The fetcher is injectable so tests can serve documents without a public address.</li>
+<li><strong>1.6:</strong> <code>application_type</code> follows OpenID Connect. <code>web</code> clients need https on a non-loopback host. <code>native</code> clients may use loopback http, a private-use scheme or https.</li>
+<li><strong>1.7:</strong> with <code>REQUIRE_OFFLINE_ACCESS_FOR_REFRESH</code> false (the default), every grant still gets a refresh token. <code>offline_access</code> is advertised and recorded either way.</li>
+<li><strong>1.8:</strong> the optional breached-password check is not built.</li>
+<li><strong>Harnesses:</strong> <code>client-check</code> and <code>mock-host</code> sign in through a shared helper (<code>tools/lib/sign-in.mjs</code>) that keeps the binding and session cookies. <code>client-check</code> passes 18 of 18 against the new flow with the real MCP SDK client.</li>
+</ul>
 <p><strong>Phase 1 exit review:</strong> <code>npm run host-check</code> against Claude and ChatGPT, with a full connect, consent and tool call on each, recorded in <code>spike/FINDINGS.md</code>. The acceptance report gains AC-29 to AC-33 (§9.3).</p>
 <hr>
 <h2 id="6-phase-2-device-service-and-token-exchange">6. Phase 2: Device Service and token exchange</h2>
@@ -1257,14 +1269,14 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 </ul>
 <h3 id="phase-1">Phase 1</h3>
 <ul>
-<li><input disabled="" type="checkbox"> 1.1 Three hostnames</li>
-<li><input disabled="" type="checkbox"> 1.2 Token format and HMAC storage</li>
-<li><input disabled="" type="checkbox"> 1.3 Cookies, AS session, CSRF, pending binding</li>
-<li><input disabled="" type="checkbox"> 1.4 Login and consent split, consent registry</li>
-<li><input disabled="" type="checkbox"> 1.5 CIMD hardening and cache</li>
-<li><input disabled="" type="checkbox"> 1.6 DCR hardening</li>
-<li><input disabled="" type="checkbox"> 1.7 <code>offline_access</code> and metadata</li>
-<li><input disabled="" type="checkbox"> 1.8 Password pepper</li>
+<li><input checked="" disabled="" type="checkbox"> 1.1 Three hostnames</li>
+<li><input checked="" disabled="" type="checkbox"> 1.2 Token format and HMAC storage</li>
+<li><input checked="" disabled="" type="checkbox"> 1.3 Cookies, AS session, CSRF, pending binding</li>
+<li><input checked="" disabled="" type="checkbox"> 1.4 Login and consent split, consent registry</li>
+<li><input checked="" disabled="" type="checkbox"> 1.5 CIMD hardening and cache</li>
+<li><input checked="" disabled="" type="checkbox"> 1.6 DCR hardening</li>
+<li><input checked="" disabled="" type="checkbox"> 1.7 <code>offline_access</code> and metadata</li>
+<li><input checked="" disabled="" type="checkbox"> 1.8 Password pepper</li>
 </ul>
 <h3 id="phase-2">Phase 2</h3>
 <ul>
@@ -1330,6 +1342,7 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <a class="l3" href="#pr-16-dcr-hardening-2-d">PR 1.6: DCR hardening · 2 d</a>
 <a class="l3" href="#pr-17-scopes-and-metadata-1-d">PR 1.7: Scopes and metadata · 1 d</a>
 <a class="l3" href="#pr-18-password-pepper-and-rehash-on-login-2-d">PR 1.8: Password pepper and rehash-on-login · 2 d</a>
+<a class="l3" href="#phase-1-as-built">Phase 1 as built</a>
 <a class="l2" href="#6-phase-2-device-service-and-token-exchange">6. Phase 2: Device Service and token exchange</a>
 <a class="l3" href="#pr-21-discriminated-caller-type-2-d">PR 2.1: Discriminated Caller type · 2 d</a>
 <a class="l3" href="#pr-22-key-provider-jwt-signer-and-jwks-2-d">PR 2.2: Key provider, JWT signer and JWKS · 2 d</a>

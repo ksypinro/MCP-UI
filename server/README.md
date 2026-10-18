@@ -109,11 +109,40 @@ The flow is ordinary authorization-code with PKCE. What is worth knowing:
   `form-action` names the client's redirect origin (browsers apply it to the
   redirect after the form submits). RFC 9700 §4.16.
 
-### What the hosted page is for
+### What the hosted pages are for
 
-`/authorize` renders the only place a password is ever typed. It is
-server-rendered, entirely outside MCP, and returns nothing to the client but an
-authorization code on a registered redirect URI. Spec section 7.4.
+They are the only place a password is ever typed. They are server-rendered,
+entirely outside MCP, and return nothing to the client but an authorization
+code on a registered redirect URI. Spec section 7.4.
+
+Signing in and approving are separate steps:
+
+1. `GET /authorize` validates the request once and stores it under an opaque
+   id, bound to this browser by a cookie. A link copied to another browser
+   cannot be completed there.
+2. `/login` signs in or signs up and starts the authorization server's own
+   session (`__Host-as_session` over HTTPS: 30 minutes idle, 12 hours at
+   most, always a fresh one on sign-in).
+3. `/consent` names the client, says whether it is verified, shows where the
+   person will be sent (the full address for a self-registered client), and
+   lists what it asks for. Approving write access needs a sign-in from the
+   last 15 minutes.
+
+An approval is remembered per client and redirect host, for the same or
+fewer scopes, while a metadata document is unchanged. It is **never**
+remembered for a dynamically registered client: DCR establishes nothing about
+who the client is, and remembered consent is what a confused-deputy attack
+rides on. Every form carries a CSRF token derived from the browser binding.
+
+### Tokens and keys
+
+Every token is typed and checksummed (`iotsw_at_…`, `iotsw_rt_…`, and so on),
+so a malformed one is refused without a database lookup and a leaked one is
+recognisable by a scanner. Tokens are stored as HMAC-SHA256 under a pepper
+held outside the database; passwords as Argon2id over an HMAC under a second
+pepper. The key material comes from `TOKEN_PEPPERS`, `PASSWORD_PEPPER` and
+`INTERNAL_MAC_KEY`, or else from `keys.json` beside the database, created on
+first start with mode 0600. **Back that file up with the database.**
 
 ### Fetching a client_id is a request you did not choose to make
 
@@ -122,9 +151,13 @@ authorization, and resolving it means fetching it. `clients.ts` requires HTTPS,
 resolves the hostname first and refuses any address that is loopback, private,
 link-local or carrier-grade NAT — `169.254.169.254` being the usual target —
 refuses redirects, caps the body, and requires the document to be
-self-referential. Fetches are budgeted per `client_id` host (20 a minute) and
-successful documents are cached for five minutes, so `GET /authorize`, which
-needs no account, cannot be used to aim requests at a host. The consent screen shows the **host of the `client_id` URL**,
+self-referential. Only ordinary public unicast addresses may be fetched, as
+classified by `ipaddr.js`, which also refuses every IPv6 form that embeds an
+IPv4 address. Documents are capped at 5 KB, fetches are budgeted per
+`client_id` host (20 a minute), and successful documents are cached in the
+database for as long as their own `Cache-Control` says, clamped to between a
+minute and a day. So `GET /authorize`, which needs no account, cannot be used
+to aim requests at a host. The consent screen shows the **host of the `client_id` URL**,
 never the document's `client_name`: the document is self-asserted, so the name
 is whatever the client felt like claiming, while the host is what it had to
 control in order to serve it.
@@ -180,8 +213,8 @@ unit test passed straight over.
 npm run acceptance
 ```
 
-Runs the suite and reports which of the 30 criteria — the 28 in section 12 of
-`../requirement.md`, plus two added by the authentication redesign — it establishes, which are only partly established, and
+Runs the suite and reports which of the 33 criteria — the 28 in section 12 of
+`../requirement.md`, plus five added by the authentication redesign — it establishes, which are only partly established, and
 which cannot be established from here at all.
 
 It fails if a criterion's evidence goes missing, becomes ambiguous, or starts

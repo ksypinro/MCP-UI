@@ -6,7 +6,7 @@ import { randomBytes } from 'node:crypto';
 import type { Db, Queryable } from '../db/index.ts';
 import { AppError } from '../errors.ts';
 import { normalizeUsername } from '../normalize.ts';
-import { hashPassword, verifyPassword } from '../password.ts';
+import { hashPassword, verifyPassword, type PasswordHash } from '../password.ts';
 import { PASSWORD_MAX, PASSWORD_MIN, USERNAME_MAX, USERNAME_MIN } from '../config.ts';
 import type { Account } from './types.ts';
 
@@ -14,6 +14,7 @@ interface AccountRow {
   id: string;
   username: string;
   password_hash: string;
+  password_pepper_version: number | null;
   created_at: Date;
 }
 
@@ -82,11 +83,12 @@ export async function createAccount(db: Db, rawUsername: unknown, rawPassword: u
   // Same reasoning as devices: let the unique index decide the winner, so two
   // simultaneous sign-ups for one name cannot both succeed.
   const { rows } = await db.query<AccountRow>(
-    `INSERT INTO accounts (id, username, normalized_username, password_hash)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO accounts (id, username, normalized_username, password_hash, password_pepper_version)
+     VALUES ($1, $2, $3, $4, $5)
      ON CONFLICT (normalized_username) DO NOTHING
-     RETURNING id, username, password_hash, created_at`,
-    [`acc_${randomBytes(9).toString('base64url')}`, username, normalized, passwordHash]
+     RETURNING id, username, password_hash, password_pepper_version, created_at`,
+    [`acc_${randomBytes(9).toString('base64url')}`, username, normalized,
+      passwordHash.encoded, passwordHash.pepperVersion]
   );
 
   const row = rows[0];
@@ -107,7 +109,8 @@ export async function verifyCredentials(
   if (typeof rawUsername !== 'string' || typeof rawPassword !== 'string') return null;
 
   const { rows } = await db.query<AccountRow>(
-    'SELECT id, username, password_hash, created_at FROM accounts WHERE normalized_username = $1',
+    `SELECT id, username, password_hash, password_pepper_version, created_at
+       FROM accounts WHERE normalized_username = $1`,
     [normalizeUsername(rawUsername)]
   );
 
@@ -118,22 +121,34 @@ export async function verifyCredentials(
     // produced by the same function: a hand-written literal risks being
     // unparseable, in which case verify throws, returns immediately, and the
     // defence is silently absent precisely when it is needed.
-    await verifyPassword(await decoyHash(), rawPassword);
+    const decoy = await decoyHash();
+    await verifyPassword(decoy.encoded, rawPassword, decoy.pepperVersion);
     return null;
   }
 
-  return (await verifyPassword(row.password_hash, rawPassword)) ? toAccount(row) : null;
+  if (!(await verifyPassword(row.password_hash, rawPassword, row.password_pepper_version))) return null;
+
+  // A hash from before peppering, or under weaker parameters, is upgraded
+  // the one time the password itself is in hand.
+  if (row.password_pepper_version === null) {
+    const upgraded = await hashPassword(rawPassword);
+    await db.query(
+      'UPDATE accounts SET password_hash = $1, password_pepper_version = $2 WHERE id = $3',
+      [upgraded.encoded, upgraded.pepperVersion, row.id]
+    );
+  }
+  return toAccount(row);
 }
 
-let decoy: Promise<string> | null = null;
-function decoyHash(): Promise<string> {
+let decoy: Promise<PasswordHash> | null = null;
+function decoyHash(): Promise<PasswordHash> {
   decoy ??= hashPassword(randomBytes(32).toString('hex'));
   return decoy;
 }
 
 export async function getAccount(db: Queryable, accountId: string): Promise<Account | null> {
   const { rows } = await db.query<AccountRow>(
-    'SELECT id, username, password_hash, created_at FROM accounts WHERE id = $1',
+    'SELECT id, username, password_hash, password_pepper_version, created_at FROM accounts WHERE id = $1',
     [accountId]
   );
   const row = rows[0];

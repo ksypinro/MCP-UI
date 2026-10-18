@@ -20,6 +20,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { uiResources } from '../../src/mcp/ui/index.ts';
+import { signUpAndApprove } from '../lib/sign-in.mjs';
 
 const BASE = process.env.BASE ?? 'http://localhost:4000';
 const REDIRECT = 'http://127.0.0.1:41234/callback';
@@ -32,29 +33,15 @@ async function authorize() {
   const registration = await fetch(`${BASE}/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: 'Mock host' })
+    body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: 'Mock host', application_type: 'native' })
   }).then((r) => r.json());
 
-  const page = await fetch(`${BASE}/authorize?` + new URLSearchParams({
+  const callback = await signUpAndApprove(`${BASE}/authorize?` + new URLSearchParams({
     client_id: registration.client_id, redirect_uri: REDIRECT, response_type: 'code',
     code_challenge: challenge, code_challenge_method: 'S256'
-  })).then((r) => r.text());
+  }), { username: 'mockhost' + Date.now().toString(36) });
 
-  const pending = page.match(/name="pending" value="([^"]+)"/)?.[1];
-  if (!pending) throw new Error('the authorization page did not render a form');
-
-  const redirected = await fetch(`${BASE}/authorize`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      pending, mode: 'signup',
-      username: 'mockhost' + Date.now().toString(36),
-      password: 'correct horse battery staple'
-    }),
-    redirect: 'manual'
-  });
-
-  const code = new URL(redirected.headers.get('location')).searchParams.get('code');
+  const code = callback.searchParams.get('code');
   const tokens = await fetch(`${BASE}/token`, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },

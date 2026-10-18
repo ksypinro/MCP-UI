@@ -23,7 +23,7 @@ export function oauthRoutes(db: Db): Router {
   // whole suite without weakening the default that ships.
   const perMinute = Number(process.env.AUTH_RATE_LIMIT_PER_MINUTE ?? 20);
   const credentialLimiter = rateLimit(perMinute, 60_000);
-  router.post('/authorize', credentialLimiter);
+  router.post('/login', credentialLimiter);
   router.post('/register', credentialLimiter);
 
   // Showing the authorization page is not a credential submission, but it is
@@ -37,26 +37,29 @@ export function oauthRoutes(db: Db): Router {
 
   /** RFC 7591 Dynamic Client Registration. Open by design, capped in clients.ts. */
   router.post('/register', async (req: Request, res: Response) => {
-    const redirectUris = Array.isArray(req.body?.redirect_uris)
-      ? (req.body.redirect_uris as unknown[]).filter((uri): uri is string => typeof uri === 'string')
-      : [];
-    const clientName = typeof req.body?.client_name === 'string' ? req.body.client_name : undefined;
-
-    const outcome = await registerClient(db, redirectUris, clientName);
+    const outcome = await registerClient(db, {
+      redirectUris: req.body?.redirect_uris,
+      clientName: req.body?.client_name,
+      applicationType: req.body?.application_type
+    });
     if ('error' in outcome) {
-      res.status(400).json({
+      res.status(400).set('Cache-Control', 'no-store').json({
         error: outcome.error,
-        error_description: outcome.error === 'registration_closed'
-          ? 'This server is not accepting new client registrations.'
-          : 'At least one valid redirect_uri is required.'
+        error_description: {
+          registration_closed: 'This server is not accepting new client registrations.',
+          invalid_redirect_uri: 'Every redirect_uri must be acceptable for the application_type, and at least one is required.',
+          invalid_client_metadata: 'application_type must be "web" or "native".'
+        }[outcome.error]
       });
       return;
     }
 
+    // Echo what was stored, not what was sent.
     res.status(201).set('Cache-Control', 'no-store').json({
       client_id: outcome.clientId,
-      ...(clientName ? { client_name: clientName } : {}),
-      redirect_uris: redirectUris,
+      ...(outcome.clientName ? { client_name: outcome.clientName } : {}),
+      redirect_uris: outcome.redirectUris,
+      application_type: outcome.applicationType,
       token_endpoint_auth_method: 'none',
       grant_types: ['authorization_code', 'refresh_token'],
       response_types: ['code']

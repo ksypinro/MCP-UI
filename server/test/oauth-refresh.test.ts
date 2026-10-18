@@ -11,7 +11,7 @@
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyOAuthAccessToken } from '../src/oauth/verify.ts';
-import { fingerprint } from '../src/oauth/crypto.ts';
+import { tokenDigest } from '../src/tokens/hash.ts';
 import { authorizeAs, exchange, json, startServer, type Harness } from './oauth-helpers.ts';
 
 let h: Harness;
@@ -54,7 +54,7 @@ test('concurrent refreshes with one token all succeed with the identical respons
        JOIN oauth_access_tokens a ON a.grant_id = r.grant_id
       WHERE r.replaced_by IS NULL AND r.revoked_at IS NULL
         AND a.token_hash = $1`,
-    [fingerprint(results[0]!.body.access_token!)]
+    [tokenDigest(results[0]!.body.access_token!)]
   );
   assert.equal(rows[0]?.n, 1, 'exactly one live refresh token remains in the family');
   assert.ok((await verifyOAuthAccessToken(h.db, results[0]!.body.access_token)).ok);

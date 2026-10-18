@@ -106,7 +106,7 @@ server/
     oauth/              OAuth 2.1 authorization server
     mcp/                MCP adapter: gate, tools, resources
       ui/assets/        the four views, plus the shared bridge and stylesheet
-  test/                 178 tests
+  test/                 203 tests
   acceptance/           criteria mapped to the tests that establish them
   tools/                dev harnesses: mock-host, host-check, client-check
 
@@ -436,6 +436,10 @@ physical device. `npm run acceptance` names each one.
 The redesign that addresses these and the authentication gaps found in
 review is in [Authentication Architecture v2](./authentication-architecture/authentication-architecture.md),
 delivered by its [implementation plan](./authentication-architecture/implementation-plan.md).
-Phase 0 of that plan (security headers on the authorization pages, rate-limit
-keys chosen after verification, atomic code and refresh handling, the ChatGPT
-challenge form, bridge origin pinning, and the iOS refresh fix) is implemented.
+Phases 0 and 1 of that plan are implemented: hardened authorization pages,
+race-safe codes and refresh, the ChatGPT challenge form, bridge origin
+pinning, the iOS refresh fix, three origins, typed tokens stored as keyed
+hashes, a peppered password store, separate sign-in and consent with a
+remembered-consent registry, and hardened CIMD and DCR. Sections 5 and 6
+above describe the system before those phases; the v2 document describes it
+after.

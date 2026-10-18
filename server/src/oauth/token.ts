@@ -9,8 +9,9 @@
 
 import { Router, type Request, type Response } from 'express';
 import type { Db } from '../db/index.ts';
-import { REFRESH_GRACE_SECONDS, RESOURCE_URI } from './config.ts';
-import { fingerprint, verifyPkce } from './crypto.ts';
+import { REFRESH_GRACE_SECONDS, RESOURCE_URI, refreshRequiresOfflineAccess } from './config.ts';
+import { verifyPkce } from './crypto.ts';
+import { tokenDigest } from '../tokens/hash.ts';
 import { MemorySealedResponses, type SealedResponses } from './sealed.ts';
 import {
   consumeAuthorizationCode, establishGrant, revokeGrantNow, rotateRefresh, type IssuedTokens
@@ -86,7 +87,8 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
     accountId: record.accountId,
     clientId: record.clientId,
     resource: record.resource,
-    scope: record.scope
+    scope: record.scope,
+    withRefresh: !refreshRequiresOfflineAccess() || record.offlineAccess
   });
   respond(res, tokens);
 }
@@ -102,7 +104,7 @@ async function exchangeRefreshToken(
 
   // Keyed by the presented token, and bound to the client, so only the same
   // client presenting the same token inside the window gets the copy.
-  const sealKey = typeof refresh_token === 'string' ? `${client_id}:${fingerprint(refresh_token)}` : '';
+  const sealKey = typeof refresh_token === 'string' ? `${client_id}:${tokenDigest(refresh_token)}` : '';
 
   const outcome = await rotateRefresh(db, refresh_token, {
     clientId: client_id,
@@ -143,7 +145,7 @@ function tokenBody(tokens: IssuedTokens) {
     access_token: tokens.accessToken,
     token_type: 'Bearer',
     expires_in: tokens.expiresIn,
-    refresh_token: tokens.refreshToken,
+    ...(tokens.refreshToken ? { refresh_token: tokens.refreshToken } : {}),
     scope: tokens.scope
   };
 }

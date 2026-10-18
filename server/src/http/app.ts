@@ -1,5 +1,5 @@
 import express from 'express';
-import type { Express } from 'express';
+import type { Express, RequestHandler } from 'express';
 import type { Db } from '../db/index.ts';
 import { errorHandler, notFound, withRequestId } from './middleware.ts';
 import { authRoutes } from './routes-auth.ts';
@@ -7,6 +7,25 @@ import { deviceRoutes } from './routes-devices.ts';
 import { oauthRoutes } from '../oauth/routes.ts';
 import { mcpRoutes } from '../mcp/routes.ts';
 import { MCP_PATH } from '../mcp/config.ts';
+import { API_BASE_URL, AUTH_BASE_URL, MCP_BASE_URL, SINGLE_ORIGIN } from '../config.ts';
+
+/**
+ * Mounts `router` only for requests addressed to `baseUrl`'s host.
+ *
+ * With one origin (local development) every router is mounted as before. With
+ * three, the authorization server answers only on its own host, the MCP
+ * endpoint only on its own, and so on, so a cookie or page of one can never be
+ * reached through another. The Host header is compared as sent; a proxy in
+ * front must preserve it.
+ */
+function onHost(baseUrl: string, router: RequestHandler): RequestHandler {
+  if (SINGLE_ORIGIN) return router;
+  const host = new URL(baseUrl).host.toLowerCase();
+  return (req, res, next) => {
+    if ((req.get('host') ?? '').toLowerCase() !== host) return next();
+    router(req, res, next);
+  };
+}
 
 export function createApp(db: Db): Express {
   const app = express();
@@ -28,15 +47,15 @@ export function createApp(db: Db): Express {
 
   // The authorization server. Mounted at the root because its discovery
   // documents live at well-known paths that cannot be moved.
-  app.use(oauthRoutes(db));
+  app.use(onHost(AUTH_BASE_URL, oauthRoutes(db)));
 
   // The MCP endpoint. Its own authorization gate runs inside, on the parsed
   // body, because a refusal there has to be an HTTP status rather than a tool
   // result.
-  app.use(mcpRoutes(db));
+  app.use(onHost(MCP_BASE_URL, mcpRoutes(db)));
 
-  app.use(authRoutes(db));
-  app.use(deviceRoutes(db));
+  app.use(onHost(API_BASE_URL, authRoutes(db)));
+  app.use(onHost(API_BASE_URL, deviceRoutes(db)));
 
   app.use(notFound());
   app.use(errorHandler({ jsonRpcPaths: [MCP_PATH] }));

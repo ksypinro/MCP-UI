@@ -3,6 +3,15 @@ import { createApp } from './http/app.ts';
 import { pruneExpired } from './domain/sessions.ts';
 import { pruneExpiredOAuth } from './oauth/store.ts';
 import { DATABASE_PATH, PORT } from './config.ts';
+import { keys, useKeyFile } from './security/keys.ts';
+import { join } from 'node:path';
+
+// Peppers and MAC keys live beside the database unless the environment
+// supplies them. Losing this file makes every stored password unverifiable.
+if (!process.env.TOKEN_PEPPERS) useKeyFile(join(DATABASE_PATH, 'keys.json'));
+// Load now, so a missing or malformed key configuration stops the server at
+// start-up rather than at the first sign-in.
+keys();
 
 const db = await createDb(DATABASE_PATH);
 const app = createApp(db);

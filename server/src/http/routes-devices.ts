@@ -8,7 +8,10 @@ import { authenticate, identityOf } from './middleware.ts';
 
 export function deviceRoutes(db: Db): Router {
   const router = Router();
-  router.use(authenticate(db, { required: true }));
+  // Scoped to the device paths. Unscoped, it ran for every request that
+  // reached this router, so any unknown path anywhere answered 401 rather
+  // than 404.
+  router.use('/v1/devices', authenticate(db, { required: true }));
 
   router.get('/v1/devices', async (_req, res) => {
     res.json({ devices: await listDevices(db, identityOf(res)) });

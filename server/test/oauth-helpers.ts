@@ -43,7 +43,12 @@ export async function registerClient(
   const response = await fetch(`${base}/register`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ redirect_uris: redirectUris, client_name: 'Test Client' })
+    body: JSON.stringify({
+      redirect_uris: redirectUris,
+      client_name: 'Test Client',
+      // Loopback callbacks are a native app's; anything else here is a web client's.
+      application_type: redirectUris.every((uri) => new URL(uri).hostname === '127.0.0.1') ? 'native' : 'web'
+    })
   });
   const body = await response.json() as { client_id?: string; error?: string };
   if (response.status !== 201 || !body.client_id) {
@@ -85,6 +90,113 @@ export function pendingIdFrom(html: string): string | null {
   return html.match(/name="pending" value="([^"]+)"/)?.[1] ?? null;
 }
 
+/** The hidden CSRF field every authorization form carries. */
+export function csrfFrom(html: string): string | null {
+  return html.match(/name="csrf" value="([^"]+)"/)?.[1] ?? null;
+}
+
+/**
+ * Just enough of a browser to walk the authorization pages: it keeps cookies
+ * for the server's origin, and follows redirects that stay on it. A redirect
+ * anywhere else — the client's callback — is where it stops.
+ */
+export class Browser {
+  readonly base: string;
+  readonly cookies = new Map<string, string>();
+
+  constructor(base: string) {
+    this.base = base;
+  }
+
+  async request(pathOrUrl: string, init: RequestInit = {}): Promise<Response> {
+    const url = new URL(pathOrUrl, this.base);
+    const headers = new Headers(init.headers);
+    if (this.cookies.size > 0) {
+      headers.set('cookie', [...this.cookies].map(([name, value]) => `${name}=${value}`).join('; '));
+    }
+    const response = await fetch(url, { ...init, headers, redirect: 'manual' });
+    for (const line of response.headers.getSetCookie()) {
+      const [pair, ...attributes] = line.split(';');
+      const index = pair!.indexOf('=');
+      const name = pair!.slice(0, index).trim();
+      const value = pair!.slice(index + 1).trim();
+      const expired = attributes.some((a) => /^\s*max-age=0\b/i.test(a) || /^\s*expires=Thu, 01 Jan 1970/i.test(a));
+      if (expired || value === '') this.cookies.delete(name);
+      else this.cookies.set(name, value);
+    }
+    return response;
+  }
+
+  /** Follows same-origin redirects; returns the final response, or the first off-site Location. */
+  async follow(response: Response): Promise<{ response: Response; offsite: URL | null }> {
+    let current = response;
+    for (let hops = 0; hops < 10; hops++) {
+      const location = current.headers.get('location');
+      if (current.status < 300 || current.status >= 400 || !location) return { response: current, offsite: null };
+      const next = new URL(location, this.base);
+      if (next.origin !== new URL(this.base).origin) return { response: current, offsite: next };
+      current = await this.request(next.toString());
+    }
+    throw new Error('too many redirects');
+  }
+
+  get(path: string): Promise<Response> {
+    return this.request(path);
+  }
+
+  post(path: string, fields: Record<string, string | undefined>): Promise<Response> {
+    return this.request(path, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: encode(fields)
+    });
+  }
+}
+
+export interface SignInOutcome {
+  /** Where the flow ended up: the client's callback, if it got that far. */
+  callback: URL | null;
+  /** The last page rendered by the server, if it stopped on one. */
+  page: Response | null;
+  html: string;
+}
+
+/**
+ * Starts an authorization in `browser`, signs in (or up) when asked to, and
+ * approves when shown the consent page. Stops at the client's callback or at
+ * any page it does not know how to answer.
+ */
+export async function walkAuthorization(
+  browser: Browser,
+  query: Record<string, string | undefined>,
+  credentials: { mode: 'login' | 'signup'; username: string; password?: string } | null,
+  options: { approve?: boolean } = {}
+): Promise<SignInOutcome> {
+  let step = await browser.follow(await browser.get(authorizeUrl(browser.base, query)));
+  for (let rounds = 0; rounds < 4; rounds++) {
+    if (step.offsite) return { callback: step.offsite, page: null, html: '' };
+    const html = await step.response.text();
+    const pending = pendingIdFrom(html);
+    const csrf = csrfFrom(html);
+    if (!pending || !csrf) return { callback: null, page: step.response, html };
+
+    if (html.includes('action="/login"') && credentials) {
+      step = await browser.follow(await browser.post('/login', {
+        pending, csrf, mode: credentials.mode, username: credentials.username,
+        password: credentials.password ?? 'correct horse battery staple'
+      }));
+      credentials = { ...credentials, mode: 'login' };
+      continue;
+    }
+    if (html.includes('action="/consent"') && options.approve !== false) {
+      step = await browser.follow(await browser.post('/consent', { pending, csrf }));
+      continue;
+    }
+    return { callback: null, page: step.response, html };
+  }
+  throw new Error('authorization did not finish');
+}
+
 /**
  * `noUncheckedIndexedAccess` makes every lookup on a Record optional, and
  * response bodies are read that way throughout, so undefined is dropped here
@@ -122,19 +234,25 @@ export interface CompletedAuthorization {
   clientId: string;
   verifier: string;
   username: string;
+  /** The browser the person used, still holding its authorization-server session. */
+  browser: Browser;
 }
 
 /** Drives a whole authorization the way a host would, ending with a code. */
 export async function authorizeAs(
   base: string,
-  options: { username?: string; scope?: string; state?: string; clientId?: string } = {}
+  options: {
+    username?: string; scope?: string; state?: string; clientId?: string;
+    mode?: 'login' | 'signup'; browser?: Browser;
+  } = {}
 ): Promise<CompletedAuthorization> {
   const clientId = options.clientId ?? (await sharedClient(base));
   const { verifier, challenge } = pkcePair();
   const username = options.username ?? `user${randomBytes(4).toString('hex')}`;
   const state = options.state ?? 'state-value';
+  const browser = options.browser ?? new Browser(base);
 
-  const page = await fetch(authorizeUrl(base, {
+  const outcome = await walkAuthorization(browser, {
     client_id: clientId,
     redirect_uri: REDIRECT_URI,
     response_type: 'code',
@@ -142,29 +260,20 @@ export async function authorizeAs(
     code_challenge: challenge,
     code_challenge_method: 'S256',
     ...(options.scope !== undefined ? { scope: options.scope } : {})
-  })).then((r) => r.text());
+  }, { mode: options.mode ?? 'signup', username });
 
-  const pending = pendingIdFrom(page);
-  if (!pending) throw new Error(`authorize did not render a form: ${page.slice(0, 300)}`);
-
-  const redirected = await fetch(`${base}/authorize`, form({
-    pending, mode: 'signup', username, password: 'correct horse battery staple'
-  }));
-
-  const location = redirected.headers.get('location');
-  if (!location) throw new Error(`authorize did not redirect (status ${redirected.status})`);
-  const url = new URL(location);
-
-  const code = url.searchParams.get('code');
-  if (!code) throw new Error(`no code in redirect: ${location}`);
+  if (!outcome.callback) throw new Error(`authorization stopped on a page: ${outcome.html.slice(0, 300)}`);
+  const code = outcome.callback.searchParams.get('code');
+  if (!code) throw new Error(`no code in redirect: ${outcome.callback}`);
 
   return {
     code,
-    state: url.searchParams.get('state'),
-    iss: url.searchParams.get('iss'),
+    state: outcome.callback.searchParams.get('state'),
+    iss: outcome.callback.searchParams.get('iss'),
     clientId,
     verifier,
-    username
+    username,
+    browser
   };
 }
 

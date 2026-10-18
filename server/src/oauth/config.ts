@@ -1,4 +1,4 @@
-import { BASE_URL } from '../config.ts';
+import { AUTH_BASE_URL, MCP_BASE_URL } from '../config.ts';
 
 /**
  * The permissions from spec section 7.3.
@@ -13,6 +13,29 @@ import { BASE_URL } from '../config.ts';
 export const SCOPES = ['devices:read', 'devices:control', 'devices:create'] as const;
 export type Scope = (typeof SCOPES)[number];
 
+/**
+ * What discovery advertises: the device scopes plus `offline_access`, which
+ * MCP 2026-07-28 uses to ask for a refresh token (SEP-2207). It is listed in
+ * the 401 challenge's scope hint too, so a host that requests exactly what
+ * the hint names still gets one.
+ */
+export const SCOPES_SUPPORTED = [...SCOPES, 'offline_access'] as const;
+
+/** Whether a raw scope parameter asks for offline_access. */
+export function requestsOfflineAccess(raw: unknown): boolean {
+  return typeof raw === 'string' && raw.split(/\s+/).includes('offline_access');
+}
+
+/**
+ * Off by default: public clients receive a refresh token whether or not they
+ * name offline_access, because it is not yet confirmed that every host does,
+ * and withholding one would force a host to re-link every hour. Turn on once
+ * host-check shows both hosts send it.
+ */
+export function refreshRequiresOfflineAccess(): boolean {
+  return process.env.REQUIRE_OFFLINE_ACCESS_FOR_REFRESH === 'true';
+}
+
 export function isScope(value: string): value is Scope {
   return (SCOPES as readonly string[]).includes(value);
 }
@@ -24,13 +47,13 @@ export function parseScopes(raw: unknown): Scope[] {
   return SCOPES.filter((scope) => unique.has(scope));
 }
 
-export const ISSUER = BASE_URL;
+export const ISSUER = AUTH_BASE_URL;
 
 /**
  * The canonical URI of the MCP server, per RFC 8707 section 2: no fragment,
  * no trailing slash. Tokens are bound to this and to nothing else.
  */
-export const RESOURCE_URI = `${BASE_URL}/mcp`;
+export const RESOURCE_URI = `${MCP_BASE_URL}/mcp`;
 
 export const AUTHORIZATION_CODE_TTL_SECONDS = 60;
 export const PENDING_AUTHORIZATION_TTL_SECONDS = 15 * 60;
