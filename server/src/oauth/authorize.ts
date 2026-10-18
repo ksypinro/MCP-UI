@@ -17,6 +17,23 @@ import {
   readPendingAuthorization, type PendingAuthorization
 } from './store.ts';
 import { renderAuthorizePage, renderErrorPage } from './pages.ts';
+import { authPageHeaders, formActionSource, newNonce } from '../security/headers.ts';
+
+/**
+ * Sends one of our own pages. Every HTML response goes through here so that
+ * none can be framed or skip the CSP; see security/headers.ts.
+ */
+function sendPage(
+  res: Response, status: number, render: (nonce: string) => string, formTargets: string[] = []
+): void {
+  const nonce = newNonce();
+  authPageHeaders(res, { nonce, formTargets });
+  res.status(status).type('html').send(render(nonce));
+}
+
+function sendError(res: Response, title: string, detail: string): void {
+  sendPage(res, 400, (nonce) => renderErrorPage(title, detail, nonce));
+}
 
 /**
  * Sends an error back to the client's registered redirect URI.
@@ -37,14 +54,17 @@ function redirectWithError(
 }
 
 function renderPending(res: Response, pending: PendingAuthorization, mode: 'login' | 'signup', error?: string, username?: string): void {
-  res.type('html').send(renderAuthorizePage({
+  // The login form's submission ends in a redirect to the client, so the CSP
+  // has to allow that destination as a form target.
+  sendPage(res, 200, (nonce) => renderAuthorizePage({
+    nonce,
     pendingId: pending.id,
     clientHost: pending.clientHost,
     scopes: pending.scopes,
     mode,
     ...(error ? { error } : {}),
     ...(username ? { username } : {})
-  }));
+  }), [formActionSource(pending.redirectUri)]);
 }
 
 export function authorizeRoutes(db: Db): Router {
@@ -55,10 +75,9 @@ export function authorizeRoutes(db: Db): Router {
     if (req.query.pending !== undefined) {
       const pending = await readPendingAuthorization(db, req.query.pending);
       if (!pending) {
-        res.status(400).type('html').send(renderErrorPage(
+        sendError(res,
           'This sign-in link has expired',
-          'Authorizations are only valid for a few minutes.'
-        ));
+          'Authorizations are only valid for a few minutes.');
         return;
       }
       renderPending(res, pending, req.query.mode === 'signup' ? 'signup' : 'login');
@@ -74,17 +93,15 @@ export function authorizeRoutes(db: Db): Router {
     // this client is allowed to use. Until then errors stay on our own page.
     const client = await resolveClient(db, client_id);
     if (!client) {
-      res.status(400).type('html').send(renderErrorPage(
+      sendError(res,
         'Unrecognised application',
-        'The application that sent you here could not be identified. Its client_id is not registered and does not resolve to a client metadata document.'
-      ));
+        'The application that sent you here could not be identified. Its client_id is not registered and does not resolve to a client metadata document.');
       return;
     }
     if (typeof redirect_uri !== 'string' || !redirectUriAllowed(redirect_uri, client.redirectUris)) {
-      res.status(400).type('html').send(renderErrorPage(
+      sendError(res,
         'Unrecognised redirect address',
-        'The application asked to be sent somewhere it has not registered, so nothing was sent.'
-      ));
+        'The application asked to be sent somewhere it has not registered, so nothing was sent.');
       return;
     }
 
@@ -142,10 +159,9 @@ export function authorizeRoutes(db: Db): Router {
   router.post('/authorize', async (req: Request, res: Response) => {
     const pending = await readPendingAuthorization(db, req.body?.pending);
     if (!pending) {
-      res.status(400).type('html').send(renderErrorPage(
+      sendError(res,
         'This sign-in link has expired',
-        'Authorizations are only valid for a few minutes.'
-      ));
+        'Authorizations are only valid for a few minutes.');
       return;
     }
 
@@ -177,12 +193,11 @@ export function authorizeRoutes(db: Db): Router {
     // authorization must not each end up with a valid code.
     const code = await claimAndIssueCode(db, accountId, pending);
     if (!code) {
-      res.status(400).type('html').send(renderErrorPage(
+      sendError(res,
         'This sign-in link has already been used',
         mode === 'signup'
           ? 'Your account was created. Start again from the app that sent you here and log in.'
-          : 'Start again from the app that sent you here.'
-      ));
+          : 'Start again from the app that sent you here.');
       return;
     }
 
@@ -196,7 +211,7 @@ export function authorizeRoutes(db: Db): Router {
   router.post('/authorize/cancel', async (req: Request, res: Response) => {
     const pending = await readPendingAuthorization(db, req.body?.pending);
     if (!pending) {
-      res.status(400).type('html').send(renderErrorPage('Nothing to cancel', 'This authorization has already ended.'));
+      sendError(res, 'Nothing to cancel', 'This authorization has already ended.');
       return;
     }
     await deletePendingAuthorization(db, pending.id);

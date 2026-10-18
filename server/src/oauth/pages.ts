@@ -22,6 +22,8 @@ const SCOPE_DESCRIPTIONS: Record<Scope, string> = {
 };
 
 export interface AuthorizePageOptions {
+  /** CSP nonce for the inline stylesheet; see security/headers.ts. */
+  nonce: string;
   pendingId: string;
   clientHost: string;
   scopes: Scope[];
@@ -74,9 +76,11 @@ const STYLES = `
     width: 100%; padding: 13px; font-size: 15px; font-weight: 600; cursor: pointer;
     border: 0; border-radius: 9px; background: var(--accent); color: var(--accent-fg);
   }
-  .cancel {
+  /* A class, not a style attribute: the page's CSP allows only the nonced
+     stylesheet, and inline style attributes are not covered by a nonce. */
+  button.cancel {
     display: block; text-align: center; margin-top: 14px; font-size: 14px;
-    color: var(--muted);
+    background: none; color: var(--muted); font-weight: 400; padding: 8px;
   }
   .error {
     background: var(--danger-bg); color: var(--danger-fg); padding: 11px 13px;
@@ -90,7 +94,7 @@ const STYLES = `
 `;
 
 export function renderAuthorizePage(options: AuthorizePageOptions): string {
-  const { pendingId, clientHost, scopes, mode, error, username = '' } = options;
+  const { nonce, pendingId, clientHost, scopes, mode, error, username = '' } = options;
   const isSignUp = mode === 'signup';
   const id = encodeURIComponent(pendingId);
 
@@ -101,7 +105,7 @@ export function renderAuthorizePage(options: AuthorizePageOptions): string {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex, nofollow">
 <title>${isSignUp ? 'Sign up' : 'Log in'} to IoT Switch</title>
-<style>${STYLES}</style>
+<style nonce="${escapeHtml(nonce)}">${STYLES}</style>
 </head>
 <body>
   <main class="card">
@@ -144,10 +148,7 @@ export function renderAuthorizePage(options: AuthorizePageOptions): string {
 
     <form method="post" action="/authorize/cancel">
       <input type="hidden" name="pending" value="${escapeHtml(pendingId)}">
-      <button type="submit" class="cancel"
-              style="background:none;color:var(--muted);font-weight:400;padding:8px">
-        Cancel
-      </button>
+      <button type="submit" class="cancel">Cancel</button>
     </form>
   </main>
 </body>
@@ -155,7 +156,7 @@ export function renderAuthorizePage(options: AuthorizePageOptions): string {
 }
 
 /** Shown when there is no valid redirect URI to send an error back to. */
-export function renderErrorPage(title: string, detail: string): string {
+export function renderErrorPage(title: string, detail: string, nonce: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -163,7 +164,7 @@ export function renderErrorPage(title: string, detail: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>${escapeHtml(title)}</title>
-<style>${STYLES}</style>
+<style nonce="${escapeHtml(nonce)}">${STYLES}</style>
 </head>
 <body>
   <main class="card">

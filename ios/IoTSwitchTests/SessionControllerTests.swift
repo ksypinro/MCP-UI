@@ -133,6 +133,41 @@ final class SessionControllerTests: XCTestCase {
         XCTAssertNil(storage.load(), "the stored session is cleared, not left to fail again")
     }
 
+    func testANetworkFailureDuringRefreshKeepsTheSession() async {
+        let api = StubAPIClient()
+        api.refreshResults = [.failure(APIError.network(message: "offline"))]
+        let storage = InMemoryTokenStorage(
+            StoredSession(accessToken: "access-1", refreshToken: "refresh-1", account: .fixture())
+        )
+        let session = SessionController(api: api, storage: storage)
+
+        do {
+            _ = try await session.authorized { _ -> String in throw APIError.unauthenticated }
+            XCTFail("expected the call to fail")
+        } catch {
+            XCTAssertEqual(error as? APIError, .network(message: "offline"), "the transport error is surfaced")
+        }
+
+        XCTAssertTrue(session.isSignedIn, "being offline is not being signed out")
+        XCTAssertEqual(storage.load()?.refreshToken, "refresh-1", "the refresh token is kept for the next attempt")
+    }
+
+    func testARateLimitedRefreshKeepsTheSession() async {
+        let api = StubAPIClient()
+        api.refreshResults = [.failure(APIError.api(
+            code: "RATE_LIMITED", message: "Too many requests.", field: nil, status: 429
+        ))]
+        let storage = InMemoryTokenStorage(
+            StoredSession(accessToken: "access-1", refreshToken: "refresh-1", account: .fixture())
+        )
+        let session = SessionController(api: api, storage: storage)
+
+        _ = try? await session.authorized { _ -> String in throw APIError.unauthenticated }
+
+        XCTAssertTrue(session.isSignedIn)
+        XCTAssertNotNil(storage.load())
+    }
+
     func testLogOutClearsLocalStateEvenIfTheServerCallFails() async {
         let api = StubAPIClient()
         api.logOutError = APIError.network(message: "offline")

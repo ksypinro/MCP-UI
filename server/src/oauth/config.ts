@@ -51,3 +51,10 @@ export const MAX_REGISTERED_CLIENTS = 500;
  * A real client registers and authorizes within minutes.
  */
 export const UNUSED_CLIENT_TTL_SECONDS = 24 * 3600;
+
+/**
+ * How long after a rotation a duplicate refresh with the old token is answered
+ * with the same response rather than treated as theft. Covers a host that
+ * refreshes from two workers at once, and a response lost in transit.
+ */
+export const REFRESH_GRACE_SECONDS = Number(process.env.REFRESH_GRACE_SECONDS ?? 30);

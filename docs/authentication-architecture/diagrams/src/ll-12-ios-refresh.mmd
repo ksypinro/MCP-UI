@@ -1,0 +1,32 @@
+sequenceDiagram
+    autonumber
+    participant UI as View models
+    participant RC as RefreshCoordinator
+    participant SE as Secure Enclave
+    participant KC as Keychain
+    participant AS as Authorization Server
+    participant GW as REST API Gateway
+    UI->>RC: accessToken() for a request
+    alt token N has over 25 percent of its life left
+        RC-->>UI: token N from memory
+    else expiring or expired
+        RC->>RC: start or join the single in-flight refresh
+        RC->>KC: read refresh token
+        RC->>SE: sign DPoP proof for POST /token
+        RC->>AS: refresh_token grant with DPoP proof
+        alt 200
+            AS-->>RC: token N2 and rotated refresh token
+            RC->>KC: replace refresh token before anything else
+            RC-->>UI: token N2 to every waiter
+        else invalid_grant
+            AS-->>RC: invalid_grant
+            RC->>KC: delete refresh token
+            RC-->>UI: signed out, show sign-in
+        else network failure
+            RC-->>UI: offline error, keep refresh token
+            Note over RC: retry later. Never sign out on a transport error.
+        end
+    end
+    UI->>SE: sign DPoP proof for this request
+    UI->>GW: request with DPoP token and proof
+    GW-->>UI: response, or 401 with DPoP-Nonce to retry once

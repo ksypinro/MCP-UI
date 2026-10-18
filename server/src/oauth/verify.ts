@@ -13,7 +13,7 @@ import { RESOURCE_URI, type Scope } from './config.ts';
 export type VerifiedToken =
   | { ok: true; accountId: string; clientId: string; grantId: string; scopes: Scope[] }
   | { ok: false; reason: 'invalid_token' }
-  | { ok: false; reason: 'insufficient_scope'; granted: Scope[]; required: Scope[] };
+  | { ok: false; reason: 'insufficient_scope'; grantId: string; granted: Scope[]; required: Scope[] };
 
 export async function verifyOAuthAccessToken(
   db: Queryable,
@@ -45,7 +45,7 @@ export async function verifyOAuthAccessToken(
   const granted = row.scope.split(' ').filter(Boolean) as Scope[];
   const missing = requiredScopes.filter((scope) => !granted.includes(scope));
   if (missing.length > 0) {
-    return { ok: false, reason: 'insufficient_scope', granted, required: requiredScopes };
+    return { ok: false, reason: 'insufficient_scope', grantId: row.grant_id, granted, required: requiredScopes };
   }
 
   return {

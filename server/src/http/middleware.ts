@@ -68,44 +68,8 @@ export function authenticate(db: Db, options: { required: boolean }): RequestHan
   };
 }
 
-/**
- * Requests per window. Spec section 7.2.
- *
- * The bucket key is a parameter because the right one differs by route:
- * credential-guessing surfaces are limited by address, but an authenticated
- * routine operation must not be, or everyone behind one NAT shares a quota.
- */
-export function rateLimit(
-  limit: number,
-  windowMs: number,
-  keyOf: (req: Request) => string = (req) => `${req.ip ?? 'unknown'}:${req.path}`
-): RequestHandler {
-  const hits = new Map<string, { count: number; resetAt: number }>();
-
-  return (req, res, next) => {
-    const now = Date.now();
-    const key = keyOf(req);
-    const entry = hits.get(key);
-
-    if (!entry || entry.resetAt <= now) {
-      hits.set(key, { count: 1, resetAt: now + windowMs });
-      // Opportunistic sweep; this map is per-process and must not grow forever.
-      if (hits.size > 10_000) {
-        for (const [k, v] of hits) if (v.resetAt <= now) hits.delete(k);
-      }
-      next();
-      return;
-    }
-
-    if (++entry.count > limit) {
-      const retryAfter = Math.ceil((entry.resetAt - now) / 1000);
-      res.setHeader('retry-after', String(retryAfter));
-      next(new AppError('RATE_LIMITED'));
-      return;
-    }
-    next();
-  };
-}
+/** Re-exported so existing routes keep their import; see security/rate-limit.ts. */
+export { rateLimit } from '../security/rate-limit.ts';
 
 export function notFound(): RequestHandler {
   return (_req, _res, next) => next(new AppError('NOT_FOUND'));

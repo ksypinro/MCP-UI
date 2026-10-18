@@ -203,7 +203,9 @@ export const CRITERIA: Criterion[] = [
       'no view reaches for an external origin, and none is declared',
       'no view asks for a device permission it does not need',
       'the templates are identical for everyone',
-      'the bridge only accepts messages from the host'
+      'the bridge only accepts messages from the host',
+      'only the handshake is posted to any origin',
+      'after the handshake, messages from another origin are ignored'
     ],
     gap: 'That a host enforces the policy we declare. We can only prove we ask '
       + 'for nothing and reach for nothing.'
@@ -240,5 +242,28 @@ export const CRITERIA: Criterion[] = [
     evidence: ['the device list bounds what it renders inline and can ask for more'],
     gap: 'How many rows actually survive an inline card on a phone. The budget '
       + 'is currently published guidance, not a measurement. FINDINGS Q2.'
+  },
+
+  // Beyond section 12: criteria added by Authentication Architecture v2
+  // (docs/authentication-architecture/implementation-plan.md, section 9.3).
+  {
+    id: 'AC-29', scenario: 'Authorization pages cannot be framed',
+    evidence: [
+      'authorization pages cannot be framed',
+      'the login form may redirect to the client it was issued for',
+      'the page styles itself only through its nonced stylesheet'
+    ]
+  },
+  {
+    id: 'AC-30', scenario: 'Single-use codes and race-safe refresh rotation',
+    evidence: [
+      'concurrent refreshes with one token all succeed with the identical response',
+      'a duplicate refresh inside the grace window gets the same tokens',
+      'a replay after the grace window revokes the grant',
+      'a replay after the successor was used revokes the grant',
+      'concurrent redemptions of one code yield exactly one token'
+    ],
+    gap: 'Proven on PGlite, which runs one statement at a time. Row-lock '
+      + 'behaviour under real contention needs a Postgres server (plan 4.1).'
   }
 ];

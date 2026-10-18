@@ -1,0 +1,48 @@
+gantt
+    title Authentication v2 delivery plan
+    dateFormat YYYY-MM-DD
+    axisFormat %d %b
+    excludes weekends
+    section Phase 0 hardening
+    0.1 to 0.4, 0.6 to 0.8 server fixes   :p0s, 2026-10-19, 8d
+    0.5 iOS refresh fix                     :p0i, 2026-10-19, 2d
+    Phase 0 exit review                     :milestone, m0, 2026-10-30, 0d
+    section Phase 1 AS foundation
+    1.1 hostnames and config                :p11, after m0, 2d
+    1.2 token format and HMAC               :p12, after p11, 3d
+    1.3 headers, cookies, AS session        :p13, after p12, 3d
+    1.4 login and consent split             :p14, after p13, 5d
+    1.5 CIMD hardening                      :p15, after p11, 3d
+    1.6 DCR hardening                       :p16, after p15, 2d
+    1.7 scopes and metadata                 :p17, after p16, 1d
+    1.8 password pepper                     :p18, after p17, 2d
+    Phase 1 exit review                     :milestone, m1, after p14, 0d
+    section Phase 2 exchange
+    2.1 Caller type                         :p21, after m1, 2d
+    2.2 keys, JWT signer, JWKS              :p22, after p21, 2d
+    2.3 token exchange                      :p23, after p22, 3d
+    2.4 Device Service module               :p24, after p23, 3d
+    2.5 adapters and token B cache          :p25, after p24, 2d
+    2.6 policy table and write budgets      :p26, after p25, 2d
+    2.7 audit actor chain                   :p27, after p26, 1d
+    Phase 2 exit review                     :milestone, m2, after p27, 0d
+    section Freeze
+    Holiday change freeze                   :crit, fz, 2026-12-21, 2027-01-01
+    section Phase 3 DPoP and iOS
+    3.1 to 3.3 DPoP server side             :p31, 2027-01-04, 6d
+    3.4 PAR and iOS client registration     :p34, after p31, 2d
+    3.5 AASA and universal link             :p35, after p34, 1d
+    3.6 iOS OAuth client (parallel)         :p36, 2026-12-07, 25d
+    3.7 legacy auth sunset flag             :p37, after p35, 2d
+    Phase 3 exit review                     :milestone, m3, 2027-01-29, 0d
+    section Phase 4 infrastructure
+    4.1 Postgres driver and CI              :p41, after m3, 5d
+    4.2 Redis stores                        :p42, after p41, 4d
+    4.3 KMS key provider                    :p43, after p42, 3d
+    4.4 revocation bus                      :p44, after p42, 2d
+    4.5 passkeys                            :p45, after p43, 6d
+    4.6 connected apps page                 :p46, after p45, 3d
+    4.7 Profile M split                     :p47, after p46, 6d
+    4.8 observability                       :p48, after p44, 3d
+    section Phase 5 optional
+    5.1 ID-JAG, 5.2 App Attest, 5.3 egress  :p5, after p47, 12d

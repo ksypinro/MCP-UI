@@ -16,20 +16,32 @@
   var hostContext = {};
   var hostCapabilities = {};
 
+  /**
+   * The host's origin, learned from its answer to ui/initialize.
+   *
+   * Until then it is unknown — the sandbox proxy's origin is assigned by the
+   * host — so the handshake request alone goes out with '*'. It carries
+   * nothing but our name and version. Everything after it, including every
+   * tool call, is addressed to the pinned origin, and anything arriving from
+   * another origin is dropped. Posting with '*' throughout is the defect
+   * behind CVE-2026-76894.
+   */
+  var hostOrigin = null;
+
   function post(message) {
-    window.parent.postMessage(message, '*');
+    window.parent.postMessage(message, hostOrigin || '*');
   }
 
   function request(method, params, timeoutMs) {
     var id = nextId++;
     post({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
     return new Promise(function (resolve, reject) {
-      pending.set(id, { resolve: resolve, reject: reject });
-      setTimeout(function () {
+      var timer = setTimeout(function () {
         if (!pending.has(id)) return;
         pending.delete(id);
         reject(new Error(method + ' timed out'));
       }, timeoutMs || 60000);
+      pending.set(id, { resolve: resolve, reject: reject, method: method, timer: timer });
     });
   }
 
@@ -58,14 +70,24 @@
     // Only the host may drive this view. Origin is unpredictable inside a
     // sandbox, so the sender is identified by window reference instead.
     if (event.source !== window.parent) return;
+    // Once pinned, the host's origin must match as well.
+    if (hostOrigin && event.origin !== hostOrigin) return;
 
     var message = event.data;
-    if (!message || message.jsonrpc !== '2.0') return;
+    if (!message || typeof message !== 'object' || message.jsonrpc !== '2.0') return;
 
     if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
       var waiter = pending.get(message.id);
       if (!waiter) return;
       pending.delete(message.id);
+      clearTimeout(waiter.timer);
+      // A sandboxed frame without allow-same-origin reports "null", which is
+      // not an origin anything can be addressed to; stay unpinned and keep
+      // relying on the source check above.
+      if (waiter.method === 'ui/initialize' && !hostOrigin
+          && typeof event.origin === 'string' && event.origin && event.origin !== 'null') {
+        hostOrigin = event.origin;
+      }
       if (message.error) {
         var error = new Error(message.error.message || 'The host refused that request.');
         error.rpc = message.error;
@@ -76,7 +98,10 @@
       return;
     }
 
-    if (message.method) {
+    if (typeof message.method === 'string') {
+      // Notifications carry an object or nothing. Anything else is malformed
+      // and is dropped rather than handed to a view.
+      if (message.params !== undefined && (typeof message.params !== 'object' || message.params === null)) return;
       var listeners = handlers.get(message.method);
       if (listeners) {
         for (var i = 0; i < listeners.length; i++) {
@@ -125,6 +150,7 @@
 
   var app = {
     hostContext: function () { return hostContext; },
+    hostOrigin: function () { return hostOrigin; },
     hostCapabilities: function () { return hostCapabilities; },
     displayMode: function () { return hostContext.displayMode || 'inline'; },
 

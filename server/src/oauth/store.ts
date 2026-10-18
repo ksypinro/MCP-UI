@@ -118,30 +118,52 @@ export interface AuthorizationCodeRecord {
   grantId: string | null;
 }
 
+interface CodeRow {
+  account_id: string; client_id: string; redirect_uri: string; code_challenge: string;
+  resource: string; scope: string; grant_id: string | null;
+}
+
 /**
  * Marks the code consumed and returns what it was. A code that was already
  * consumed is still returned, flagged, so the caller can treat replay as the
  * attack it probably is rather than as an unknown code.
+ *
+ * "First one wins" is a property of the statement itself: only a caller whose
+ * UPDATE finds `consumed_at IS NULL` gets an unflagged record. An earlier
+ * version compared `consumed_at < now()` afterwards, which is only safe while
+ * statements run one at a time; on a Postgres server two concurrent
+ * redemptions could both see the code as fresh.
  */
 export async function consumeAuthorizationCode(
   db: Queryable, code: unknown
 ): Promise<AuthorizationCodeRecord | null> {
   if (typeof code !== 'string' || code.length === 0) return null;
-  const { rows } = await db.query<{
-    account_id: string; client_id: string; redirect_uri: string; code_challenge: string;
-    resource: string; scope: string; already_consumed: boolean; expired: boolean;
-    grant_id: string | null;
-  }>(
+  const hash = fingerprint(code);
+
+  const { rows } = await db.query<CodeRow>(
     `UPDATE oauth_authorization_codes
-        SET consumed_at = COALESCE(consumed_at, now())
-      WHERE code_hash = $1
-      RETURNING account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id,
-                (consumed_at < now()) AS already_consumed,
-                (expires_at <= now()) AS expired`,
-    [fingerprint(code)]
+        SET consumed_at = now()
+      WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > now()
+      RETURNING account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id`,
+    [hash]
   );
-  const row = rows[0];
-  if (!row) return null;
+  const fresh = rows[0];
+  if (fresh) return toCodeRecord(fresh, false, false);
+
+  // Nothing flipped: the code is unknown, expired, or already spent. Only a
+  // read tells them apart.
+  const { rows: misses } = await db.query<CodeRow & { already_consumed: boolean; expired: boolean }>(
+    `SELECT account_id, client_id, redirect_uri, code_challenge, resource, scope, grant_id,
+            (consumed_at IS NOT NULL) AS already_consumed,
+            (expires_at <= now()) AS expired
+       FROM oauth_authorization_codes WHERE code_hash = $1`,
+    [hash]
+  );
+  const miss = misses[0];
+  return miss ? toCodeRecord(miss, miss.already_consumed, miss.expired) : null;
+}
+
+function toCodeRecord(row: CodeRow, alreadyConsumed: boolean, expired: boolean): AuthorizationCodeRecord {
   return {
     accountId: row.account_id,
     clientId: row.client_id,
@@ -149,8 +171,8 @@ export async function consumeAuthorizationCode(
     codeChallenge: row.code_challenge,
     resource: row.resource,
     scope: row.scope,
-    alreadyConsumed: row.already_consumed,
-    expired: row.expired,
+    alreadyConsumed,
+    expired,
     grantId: row.grant_id
   };
 }
@@ -188,6 +210,11 @@ export async function issueTokens(
   };
 }
 
+/**
+ * Revokes a grant and everything it issued. Takes a Queryable so it can run
+ * inside a caller's transaction; use revokeGrantNow when there is none, so the
+ * three statements cannot be left half-applied.
+ */
 export async function revokeGrant(db: Queryable, grantId: string): Promise<void> {
   await db.query('UPDATE oauth_grants SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL', [grantId]);
   await db.query('DELETE FROM oauth_access_tokens WHERE grant_id = $1', [grantId]);
@@ -195,6 +222,10 @@ export async function revokeGrant(db: Queryable, grantId: string): Promise<void>
     'UPDATE oauth_refresh_tokens SET revoked_at = now() WHERE grant_id = $1 AND revoked_at IS NULL',
     [grantId]
   );
+}
+
+export async function revokeGrantNow(db: Db, grantId: string): Promise<void> {
+  await db.transaction((tx) => revokeGrant(tx, grantId));
 }
 
 /* --------------------------------------------------------- refresh tokens */
@@ -241,21 +272,103 @@ export async function readRefreshToken(
   };
 }
 
+export type RefreshOutcome =
+  | { kind: 'rotated'; issued: IssuedTokens }
+  /** A duplicate inside the grace window: answer with the sealed response. */
+  | { kind: 'replay' }
+  /** A rotated token presented outside the window. The grant is now revoked. */
+  | { kind: 'theft' }
+  | { kind: 'invalid'; reason: 'unknown' | 'dead' | 'wrong_client' }
+  | { kind: 'invalid_target' }
+  | { kind: 'invalid_scope' };
+
+interface LockedRefreshRow {
+  token_hash: string; grant_id: string; audience: string; scope: string; replaced_by: string | null;
+  client_id: string; revoked: boolean; expired: boolean; grant_revoked: boolean;
+  within_grace: boolean; successor_used: boolean;
+}
+
 /**
- * One transaction, because a rotation that issues without retiring leaves the
- * old refresh token valid *and* unmarked — so a later replay of it is not
- * recognised as reuse, losing the only signal that it leaked.
+ * Rotates a refresh token: lock, decide, issue, retire — one transaction.
+ *
+ * Reading the token outside the transaction that rotates it let concurrent
+ * refreshes interleave: on PGlite every race tripped reuse detection and
+ * revoked the grant, and on a Postgres server two of them could both rotate
+ * and fork the family. The row lock queues concurrent callers; the guarded
+ * UPDATE retires the token at most once even if the lock were ever lost.
+ *
+ * A token that was already rotated is benign only if it is presented again
+ * within `graceSeconds`, by the same client, before its successor has itself
+ * been used. The caller then answers with the response it sealed the first
+ * time (see sealed.ts). Anything else is treated as theft, and the whole grant
+ * is revoked inside this transaction so the refusal cannot roll it back.
+ *
+ * `seal` runs inside the transaction, before commit, so a concurrent duplicate
+ * that queues on the row lock always finds the response already sealed.
  */
-export async function rotateRefreshToken(
-  db: Db, previousHash: string, grantId: string, audience: string, scope: string
-): Promise<IssuedTokens> {
-  return db.transaction(async (tx) => {
-    const issued = await issueTokens(tx, grantId, audience, scope);
-    await tx.query(
-      'UPDATE oauth_refresh_tokens SET replaced_by = $1 WHERE token_hash = $2',
-      [fingerprint(issued.refreshToken), previousHash]
+export async function rotateRefresh(
+  db: Db,
+  presented: unknown,
+  request: {
+    clientId: string; resource: unknown; scope: unknown; graceSeconds: number;
+    seal: (issued: IssuedTokens) => void;
+  }
+): Promise<RefreshOutcome> {
+  if (typeof presented !== 'string' || presented.length === 0) return { kind: 'invalid', reason: 'unknown' };
+
+  return db.transaction<RefreshOutcome>(async (tx) => {
+    const { rows } = await tx.query<LockedRefreshRow>(
+      `SELECT r.token_hash, r.grant_id, r.audience, r.scope, r.replaced_by, g.client_id,
+              (r.revoked_at IS NOT NULL) AS revoked,
+              (r.expires_at <= now()) AS expired,
+              (g.revoked_at IS NOT NULL) AS grant_revoked,
+              (r.replaced_at IS NOT NULL
+                 AND r.replaced_at > now() - make_interval(secs => $2)) AS within_grace,
+              EXISTS (SELECT 1 FROM oauth_refresh_tokens s
+                       WHERE s.token_hash = r.replaced_by
+                         AND (s.replaced_by IS NOT NULL OR s.revoked_at IS NOT NULL)) AS successor_used
+         FROM oauth_refresh_tokens r
+         JOIN oauth_grants g ON g.id = r.grant_id
+        WHERE r.token_hash = $1
+          FOR UPDATE OF r`,
+      [fingerprint(presented), request.graceSeconds]
     );
-    return issued;
+    const row = rows[0];
+    if (!row) return { kind: 'invalid', reason: 'unknown' };
+
+    if (row.replaced_by !== null) {
+      if (row.grant_revoked) return { kind: 'invalid', reason: 'dead' };
+      if (row.within_grace && !row.successor_used && row.client_id === request.clientId) {
+        return { kind: 'replay' };
+      }
+      // A legitimate client never replays a rotated token outside the window,
+      // so take down the whole grant — including the token the thief did not
+      // steal.
+      await revokeGrant(tx, row.grant_id);
+      return { kind: 'theft' };
+    }
+
+    if (row.revoked || row.grant_revoked || row.expired) return { kind: 'invalid', reason: 'dead' };
+    if (row.client_id !== request.clientId) return { kind: 'invalid', reason: 'wrong_client' };
+    if (request.resource !== undefined && request.resource !== row.audience) return { kind: 'invalid_target' };
+
+    // A refresh may narrow scope but never widen it (RFC 6749 section 6).
+    let scope = row.scope;
+    if (typeof request.scope === 'string' && request.scope.trim().length > 0) {
+      const granted = row.scope.split(' ').filter(Boolean);
+      const requested = request.scope.split(/\s+/).filter(Boolean);
+      if (requested.some((entry) => !granted.includes(entry))) return { kind: 'invalid_scope' };
+      scope = requested.join(' ');
+    }
+
+    const issued = await issueTokens(tx, row.grant_id, row.audience, scope);
+    await tx.query(
+      `UPDATE oauth_refresh_tokens SET replaced_by = $1, replaced_at = now()
+        WHERE token_hash = $2 AND replaced_by IS NULL`,
+      [fingerprint(issued.refreshToken), row.token_hash]
+    );
+    request.seal(issued);
+    return { kind: 'rotated', issued };
   });
 }
 
@@ -288,7 +401,7 @@ export async function establishGrant(
 
 export async function revokeByRefreshToken(db: Db, token: string): Promise<void> {
   const record = await readRefreshToken(db, token);
-  if (record) await revokeGrant(db, record.grantId);
+  if (record) await revokeGrantNow(db, record.grantId);
 }
 
 export async function revokeByAccessToken(db: Db, token: string): Promise<void> {
@@ -297,7 +410,7 @@ export async function revokeByAccessToken(db: Db, token: string): Promise<void> 
     [fingerprint(token)]
   );
   const grantId = rows[0]?.grant_id;
-  if (grantId) await revokeGrant(db, grantId);
+  if (grantId) await revokeGrantNow(db, grantId);
 }
 
 /** Deletes what has expired. Both tables are read on every protected call. */

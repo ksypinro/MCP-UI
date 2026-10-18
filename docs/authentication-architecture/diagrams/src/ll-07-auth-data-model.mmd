@@ -1,0 +1,97 @@
+erDiagram
+    ACCOUNT ||--o{ PASSWORD_CREDENTIAL : has
+    ACCOUNT ||--o{ PASSKEY : has
+    ACCOUNT ||--o{ AS_SESSION : signs_in
+    ACCOUNT ||--o{ CONSENT : approves
+    ACCOUNT ||--o{ GRANT : authorizes
+    CLIENT ||--o{ CONSENT : receives
+    CLIENT ||--o{ GRANT : holds
+    GRANT ||--o{ ACCESS_TOKEN : issues
+    GRANT ||--o{ REFRESH_TOKEN : issues
+    GRANT ||--o{ AUTH_CODE : redeemed_from
+    TENANT ||--o{ TRUSTED_ISSUER : allows
+    TENANT ||--o{ SUBJECT_LINK : maps
+    SUBJECT_LINK }o--|| ACCOUNT : resolves_to
+    ACCOUNT {
+        text id PK
+        text normalized_username UK
+        timestamptz created_at
+    }
+    PASSWORD_CREDENTIAL {
+        text account_id FK
+        text argon2id_hash "peppered"
+        int pepper_version
+    }
+    PASSKEY {
+        text credential_id PK
+        text account_id FK
+        bytea public_key
+        bigint sign_count
+    }
+    CLIENT {
+        text client_id PK "URL for CIMD"
+        text kind "cimd, preregistered, dcr"
+        text trust "verified, unverified"
+        jsonb redirect_uris
+    }
+    CONSENT {
+        text account_id FK
+        text client_id FK
+        text scopes
+        text redirect_host
+        timestamptz granted_at
+    }
+    GRANT {
+        text id PK
+        text account_id FK
+        text client_id FK
+        text resource "audience"
+        text scopes
+        text dpop_jkt "nullable"
+        timestamptz revoked_at
+    }
+    AUTH_CODE {
+        text code_hmac PK
+        text grant_id FK "set on redemption"
+        text code_challenge
+        text dpop_jkt
+        timestamptz consumed_at
+        timestamptz expires_at
+    }
+    ACCESS_TOKEN {
+        text token_hmac PK
+        text grant_id FK
+        text audience
+        text scopes
+        text cnf_jkt
+        timestamptz expires_at
+    }
+    REFRESH_TOKEN {
+        text token_hmac PK
+        text grant_id FK
+        text family_id
+        text replaced_by
+        timestamptz replaced_at
+        timestamptz revoked_at
+        timestamptz expires_at
+    }
+    AS_SESSION {
+        text id_hmac PK
+        text account_id FK
+        text acr
+        timestamptz auth_time
+        timestamptz idle_expires_at
+    }
+    TENANT {
+        text id PK
+    }
+    TRUSTED_ISSUER {
+        text tenant_id FK
+        text issuer_url
+        text jwks_url
+    }
+    SUBJECT_LINK {
+        text tenant_id FK
+        text idp_subject
+        text account_id FK
+    }

@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    actor U as Employee
+    participant H as Host MCP client
+    participant IDP as Enterprise IdP
+    participant AS as IoT Switch AS
+    participant RS as MCP Resource Server
+    U->>H: signs in to the host with company SSO
+    H->>IDP: OIDC login, MFA and conditional access apply here
+    IDP-->>H: ID token for the employee
+    H->>RS: tools/call list_devices, no token
+    RS-->>H: 401 WWW-Authenticate with resource_metadata
+    H->>IDP: RFC 8693 token exchange, subject ID token, audience AS issuer, resource mcp
+    Note over IDP: admin policy decides whether this host may reach IoT Switch
+    IDP-->>H: ID-JAG, token_type N_A, 5 min, aud AS issuer
+    H->>AS: POST /token grant_type jwt-bearer, assertion ID-JAG, private_key_jwt client auth
+    Note over AS: issuer in tenant allowlist, signature, typ, aud, resource, client_id match, jti unused
+    AS->>AS: map tenant and subject to account through the link table
+    AS-->>H: token A aud mcp 15 min, no refresh token
+    H->>RS: retry with token A
+    RS-->>H: 200 devices
+    Note over H,AS: on expiry the host repeats the exchange silently

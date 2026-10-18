@@ -25,3 +25,14 @@ export function requiredScopeFor(toolName: string): Scope | null {
 }
 
 export const SERVER_INFO = { name: 'iot-switch', version: '0.1.0' } as const;
+
+/**
+ * The per-tool security scheme ChatGPT reads to decide whether a tool needs
+ * account linking. Derived from PROTECTED_TOOLS so the two cannot disagree.
+ */
+export type SecurityScheme = { type: 'noauth' } | { type: 'oauth2'; scopes: Scope[] };
+
+export function securitySchemesFor(toolName: string): SecurityScheme[] {
+  const scope = requiredScopeFor(toolName);
+  return scope ? [{ type: 'oauth2', scopes: [scope] }] : [{ type: 'noauth' }];
+}

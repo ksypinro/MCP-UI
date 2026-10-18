@@ -1,0 +1,23 @@
+flowchart TB
+    A(["request reaches /mcp"]) --> O{"Origin header present<br/>and not allowlisted?"}
+    O -->|"yes"| R403["403, stop"]
+    O -->|"no"| B{"body valid JSON-RPC,<br/>under 64 KB?"}
+    B -->|"no"| R400["400 or 413"]
+    B -->|"yes"| C{"protected tools in body?<br/>union of their scopes"}
+    C -->|"none"| ANON["proceed with AnonymousIdentity,<br/>a distinct type protected<br/>handlers refuse"]
+    C -->|"some"| T{"Authorization header<br/>Bearer or DPoP?"}
+    T -->|"missing"| CH401
+    T -->|"present"| I{"introspection active,<br/>aud is this resource,<br/>iss, exp ok?"}
+    I -->|"no"| CH401["challenge: invalid_token"]
+    I -->|"yes"| D{"token has cnf.jkt?"}
+    D -->|"yes"| DP{"proof valid: typ, alg,<br/>htm, htu, iat, jti new,<br/>ath, nonce?"}
+    DP -->|"no"| CHD["challenge: invalid_dpop_proof<br/>with DPoP-Nonce"]
+    D -->|"no"| S
+    DP -->|"yes"| S{"scopes cover<br/>every call in batch?"}
+    S -->|"no"| CH403["403 insufficient_scope,<br/>all needed scopes listed"]
+    S -->|"yes"| W{"write budget for<br/>grant and device left?"}
+    W -->|"no"| R429["429 with Retry-After"]
+    W -->|"yes"| OK["proceed with VerifiedIdentity:<br/>sub, client_id, grant_id, scopes, jkt"]
+    CH401 --> HA{"caller verified as ChatGPT<br/>by mTLS certificate?"}
+    HA -->|"yes"| CG["200 tool error with<br/>_meta mcp/www_authenticate"]
+    HA -->|"no"| H401["HTTP 401 with WWW-Authenticate<br/>resource_metadata, scope, error"]

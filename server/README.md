@@ -96,6 +96,18 @@ The flow is ordinary authorization-code with PKCE. What is worth knowing:
 - **Everything that can leak is treated as leaked.** A replayed authorization
   code revokes exactly the grant it produced; a replayed refresh token revokes
   the whole grant, including the token the thief did not steal.
+- **Redemption and rotation are atomic.** A code is consumed by one guarded
+  `UPDATE`, so two concurrent redemptions cannot both succeed. A refresh locks
+  its row, decides and rotates in one transaction.
+- **A duplicate refresh is not theft.** Hosts refresh from several workers at
+  once, and responses get lost. The same token presented again by the same
+  client within `REFRESH_GRACE_SECONDS`, before its successor has been used,
+  gets back the identical response, sealed in memory with AES-GCM for that
+  window. Outside it, the grant is revoked.
+- **The pages cannot be framed.** Every HTML response carries
+  `frame-ancestors 'none'`, `X-Frame-Options: DENY` and a nonce-based CSP whose
+  `form-action` names the client's redirect origin (browsers apply it to the
+  redirect after the form submits). RFC 9700 §4.16.
 
 ### What the hosted page is for
 
@@ -110,7 +122,9 @@ authorization, and resolving it means fetching it. `clients.ts` requires HTTPS,
 resolves the hostname first and refuses any address that is loopback, private,
 link-local or carrier-grade NAT — `169.254.169.254` being the usual target —
 refuses redirects, caps the body, and requires the document to be
-self-referential. The consent screen shows the **host of the `client_id` URL**,
+self-referential. Fetches are budgeted per `client_id` host (20 a minute) and
+successful documents are cached for five minutes, so `GET /authorize`, which
+needs no account, cannot be used to aim requests at a host. The consent screen shows the **host of the `client_id` URL**,
 never the document's `client_name`: the document is self-asserted, so the name
 is whatever the client felt like claiming, while the host is what it had to
 control in order to serve it.
@@ -166,8 +180,8 @@ unit test passed straight over.
 npm run acceptance
 ```
 
-Runs the suite and reports which of the 28 criteria in section 12 of
-`../requirement.md` it establishes, which are only partly established, and
+Runs the suite and reports which of the 30 criteria — the 28 in section 12 of
+`../requirement.md`, plus two added by the authentication redesign — it establishes, which are only partly established, and
 which cannot be established from here at all.
 
 It fails if a criterion's evidence goes missing, becomes ambiguous, or starts

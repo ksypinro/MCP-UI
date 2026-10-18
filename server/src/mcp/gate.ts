@@ -16,6 +16,8 @@ import { SCOPES, type Scope } from '../oauth/config.ts';
 import { verifyOAuthAccessToken } from '../oauth/verify.ts';
 import { requiredScopeFor } from './config.ts';
 import type { Identity } from '../domain/types.ts';
+import { AppError } from '../errors.ts';
+import type { BucketResult } from '../security/rate-limit.ts';
 
 const PRM_URL = `${BASE_URL}/.well-known/oauth-protected-resource/mcp`;
 
@@ -25,12 +27,6 @@ export function bearerFrom(req: Request): string | null {
   return header.slice(7).trim() || null;
 }
 
-/**
- * The protected tool named in this body, if any.
- *
- * Handles a batch, because a batch containing one protected call must still
- * produce a challenge rather than slipping through alongside public ones.
- */
 /**
  * Every protected tool named in this body, and the scopes they need together.
  *
@@ -58,21 +54,47 @@ export function protectedCallsIn(body: unknown): { tools: string[]; scopes: Scop
   return { tools, scopes: [...scopes] };
 }
 
+/** The value of a WWW-Authenticate challenge, shared by the HTTP and tool-result forms. */
+export function challengeValue(error: string, description: string, scopes: readonly Scope[]): string {
+  return `Bearer error="${error}", error_description="${description}", `
+    + `resource_metadata="${PRM_URL}", scope="${scopes.join(' ')}"`;
+}
+
 function challenge(
   res: Response, status: 401 | 403, error: string, description: string, scopes: readonly Scope[]
 ): void {
   res
     .status(status)
-    .set(
-      'WWW-Authenticate',
-      `Bearer error="${error}", error_description="${description}", ` +
-        `resource_metadata="${PRM_URL}", scope="${scopes.join(' ')}"`
-    )
+    .set('WWW-Authenticate', challengeValue(error, description, scopes))
     .json({ error, error_description: description });
 }
 
+/**
+ * Whether this caller should receive its authorization challenge as a tool
+ * result rather than as an HTTP status.
+ *
+ * ChatGPT starts account linking from a tool error carrying
+ * `_meta["mcp/www_authenticate"]` on a tool that declares `securitySchemes`;
+ * Claude starts it only from a transport 401. Off by default. When on, it
+ * applies only to requests a proxy we control has marked as coming from
+ * ChatGPT (by its mTLS client certificate), because the header is otherwise
+ * forgeable and would let anyone downgrade a 401 into a tool error.
+ */
+function wantsToolChallenge(req: Request): boolean {
+  return process.env.CHATGPT_TOOL_CHALLENGE === 'trusted-header'
+    && Boolean(process.env.TRUST_PROXY)
+    && req.get('x-verified-client') === 'chatgpt';
+}
+
+export interface GateLimits {
+  /** Requests with no verified token, keyed by client address. */
+  perAddress: (key: string) => Promise<BucketResult>;
+  /** Requests whose token verified, keyed by grant. */
+  perGrant: (key: string) => Promise<BucketResult>;
+}
+
 export type GateOutcome =
-  | { proceed: true; identity: Identity | null }
+  | { proceed: true; identity: Identity | null; challenge?: string }
   | { proceed: false };
 
 /**
@@ -81,43 +103,60 @@ export type GateOutcome =
  * Public calls fall through with a null identity. `initialize`, `tools/list`
  * and `resources/read` are never gated, which is what lets a host discover the
  * server before anyone has signed in.
+ *
+ * The rate-limit bucket is chosen only after the token has been verified. A
+ * verified token counts against its grant, so a host serving many users from
+ * one egress address does not throttle them all together. Anything else — no
+ * token, or a token that does not verify — counts against the address.
+ * Choosing by the token *before* verifying it let a random bearer string buy a
+ * fresh, empty bucket on every request.
  */
-export async function gate(db: Db, req: Request, res: Response, requestId: string): Promise<GateOutcome> {
+export async function gate(
+  db: Db, req: Request, res: Response, requestId: string, limits: GateLimits
+): Promise<GateOutcome> {
   const token = bearerFrom(req);
   const wanted = protectedCallsIn(req.body);
+  const verified = token ? await verifyOAuthAccessToken(db, token, wanted.scopes) : null;
 
-  if (wanted.tools.length === 0) {
-    // Still resolve a token when one is present: public tools behave
-    // differently for a signed-in caller, and get_auth_status exists to say so.
-    if (!token) return { proceed: true, identity: null };
-    const verified = await verifyOAuthAccessToken(db, token);
-    return {
-      proceed: true,
-      identity: verified.ok
-        ? { accountId: verified.accountId, channel: 'mcp', requestId }
-        : null
-    };
+  const grantId = verified && (verified.ok || verified.reason === 'insufficient_scope')
+    ? verified.grantId
+    : null;
+  const allowed = grantId
+    ? await limits.perGrant(`mcp-grant:${grantId}`)
+    : await limits.perAddress(`mcp-ip:${req.ip ?? 'unknown'}`);
+  if (!allowed.ok) {
+    res.setHeader('retry-after', String(allowed.retryAfter));
+    throw new AppError('RATE_LIMITED');
   }
+
+  const identity: Identity | null = verified?.ok
+    ? { accountId: verified.accountId, channel: 'mcp', requestId }
+    : null;
+
+  // Public calls behave differently for a signed-in caller, and
+  // get_auth_status exists to say so, so the identity is still passed on.
+  if (wanted.tools.length === 0) return { proceed: true, identity };
 
   // The union: a batch is authorized only if the token can make every
   // protected call in it.
-  const verified = await verifyOAuthAccessToken(db, token, wanted.scopes);
+  if (identity) return { proceed: true, identity };
 
-  if (verified.ok) {
-    return { proceed: true, identity: { accountId: verified.accountId, channel: 'mcp', requestId } };
+  const insufficient = verified?.ok === false && verified.reason === 'insufficient_scope';
+  const error = insufficient ? 'insufficient_scope' : 'invalid_token';
+  const description = insufficient
+    ? `Scope ${wanted.scopes.join(' ')} is required`
+    : 'Authentication required for this tool';
+
+  if (wantsToolChallenge(req)) {
+    // Proceed with no identity: every protected handler then refuses, and
+    // carries the challenge. Never with the token's identity — a token short
+    // of scope must not reach a handler that trusts the gate for scope.
+    return { proceed: true, identity: null, challenge: challengeValue(error, description, SCOPES) };
   }
 
-  if (verified.reason === 'insufficient_scope') {
-    // Name every scope the integration needs, not just the missing one:
-    // a client that re-consents with only what this challenge lists can lose
-    // permissions it already had.
-    challenge(
-      res, 403, 'insufficient_scope',
-      `Scope ${wanted.scopes.join(' ')} is required`, SCOPES
-    );
-    return { proceed: false };
-  }
-
-  challenge(res, 401, 'invalid_token', 'Authentication required for this tool', SCOPES);
+  // Name every scope the integration needs, not just the missing one: a
+  // client that re-consents with only what this challenge lists can lose
+  // permissions it already had.
+  challenge(res, insufficient ? 403 : 401, error, description, SCOPES);
   return { proceed: false };
 }
