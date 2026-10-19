@@ -3,6 +3,7 @@ import type { Express, RequestHandler } from 'express';
 import type { Db } from '../db/index.ts';
 import { errorHandler, notFound, withRequestId } from './middleware.ts';
 import { authRoutes } from './routes-auth.ts';
+import { appLinkRoutes } from './app-links.ts';
 import { deviceRoutes } from './routes-devices.ts';
 import { oauthRoutes } from '../oauth/routes.ts';
 import { mcpRoutes } from '../mcp/routes.ts';
@@ -67,6 +68,7 @@ export function createApp(db: Db): Express {
 
   app.use(onHost(MCP_BASE_URL, mcpRoutes({ db, devices, exchange: mcpExchange, budgets })));
 
+  app.use(onHost(API_BASE_URL, appLinkRoutes()));
   app.use(onHost(API_BASE_URL, authRoutes(db)));
   app.use(onHost(API_BASE_URL, deviceRoutes({ db, devices, exchange: apiExchange, budgets })));
 

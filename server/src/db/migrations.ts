@@ -321,5 +321,31 @@ export const MIGRATIONS: Migration[] = [
         ADD COLUMN via         text,
         ADD COLUMN auth_method text;
     `
+  },
+  {
+    name: '010_dpop_and_par',
+    sql: `
+      -- DPoP (RFC 9449). A grant bound to a key carries its thumbprint; every
+      -- access token issued under it carries it as cnf.jkt, and its refresh
+      -- tokens are refused without a proof from that key. A thumbprint named
+      -- at authorization (dpop_jkt) travels with the pending request and the
+      -- code, so the code can only be redeemed with that key.
+      ALTER TABLE oauth_grants ADD COLUMN dpop_jkt text;
+      ALTER TABLE oauth_access_tokens ADD COLUMN cnf_jkt text;
+      ALTER TABLE oauth_authorization_codes ADD COLUMN dpop_jkt text;
+      ALTER TABLE oauth_pending_authorizations
+        ADD COLUMN dpop_jkt    text,
+        ADD COLUMN first_party boolean NOT NULL DEFAULT false;
+
+      -- Pushed authorization requests (RFC 9126): parameters sent over the
+      -- back channel and referenced by an opaque, single-use request_uri, so
+      -- they never travel through the browser.
+      CREATE TABLE par_requests (
+        id         text PRIMARY KEY,
+        client_id  text NOT NULL,
+        params     text NOT NULL,          -- JSON
+        expires_at timestamptz NOT NULL
+      );
+    `
   }
 ];

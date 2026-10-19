@@ -10,9 +10,12 @@
  */
 
 import type { Request, Response } from 'express';
+import { credentialFrom } from '../security/credentials.ts';
+import { DpopError, currentDpopNonce, verifyDpopProof } from '../oauth/dpop.ts';
+import { MCP_PATH } from './config.ts';
 import type { Db } from '../db/index.ts';
 import { MCP_BASE_URL } from '../config.ts';
-import { SCOPES_SUPPORTED, type Scope } from '../oauth/config.ts';
+import { DPOP_ALGORITHMS, SCOPES_SUPPORTED, type Scope } from '../oauth/config.ts';
 import { verifyOAuthAccessToken } from '../oauth/verify.ts';
 import { policyFor } from './policy.ts';
 import type { Caller } from '../domain/types.ts';
@@ -21,10 +24,23 @@ import type { BucketResult } from '../security/rate-limit.ts';
 
 const PRM_URL = `${MCP_BASE_URL}/.well-known/oauth-protected-resource/mcp`;
 
+/** The presented token, in either scheme. Kept for callers that only need the value. */
 export function bearerFrom(req: Request): string | null {
-  const header = req.get('authorization');
-  if (!header || !/^bearer /i.test(header)) return null;
-  return header.slice(7).trim() || null;
+  return credentialFrom(req)?.token ?? null;
+}
+
+/**
+ * Answers a request whose token is bound to a DPoP key but whose proof is
+ * missing or wrong (RFC 9449 section 7.1). A fresh nonce rides along, so a
+ * client told to use one can retry at once.
+ */
+function dpopChallenge(res: Response, error: DpopError): void {
+  res
+    .status(401)
+    .set('WWW-Authenticate',
+      `DPoP error="${error.code}", error_description="${error.message}", algs="${DPOP_ALGORITHMS.join(' ')}"`)
+    .set('DPoP-Nonce', currentDpopNonce())
+    .json({ error: error.code, error_description: error.message });
 }
 
 /**
@@ -117,7 +133,8 @@ export type GateOutcome =
 export async function gate(
   db: Db, req: Request, res: Response, requestId: string, limits: GateLimits
 ): Promise<GateOutcome> {
-  const token = bearerFrom(req);
+  const credential = credentialFrom(req);
+  const token = credential?.token ?? null;
   const wanted = protectedCallsIn(req.body);
   const verified = token ? await verifyOAuthAccessToken(db, token, wanted.scopes) : null;
 
@@ -130,6 +147,22 @@ export async function gate(
   if (!allowed.ok) {
     res.setHeader('retry-after', String(allowed.retryAfter));
     throw new AppError('RATE_LIMITED');
+  }
+
+  // A token bound to a DPoP key is worthless without a proof from that key:
+  // presented as a plain Bearer token, or with a bad proof, it is refused
+  // however valid it otherwise is.
+  if (verified?.ok && verified.cnfJkt && token) {
+    try {
+      if (credential?.scheme !== 'DPoP') throw new DpopError('invalid_dpop_proof', 'This token must be presented with the DPoP scheme.');
+      await verifyDpopProof(req.get('dpop'), {
+        htm: req.method, htu: `${MCP_BASE_URL}${MCP_PATH}`, accessToken: token, expectedJkt: verified.cnfJkt
+      });
+    } catch (error) {
+      if (!(error instanceof DpopError)) throw error;
+      dpopChallenge(res, error);
+      return { proceed: false };
+    }
   }
 
   const anonymous: Caller = { kind: 'anonymous', requestId };

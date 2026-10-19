@@ -5,11 +5,21 @@
  * `["none"]`, which Claude requires before it will use CIMD — so there is no
  * client secret to check. PKCE and the client_id binding on the code are what
  * stand in for one.
+ *
+ * DPoP (RFC 9449): a request carrying a proof gets tokens bound to the
+ * proof's key, `token_type: DPoP`. A code whose authorization named a key
+ * (dpop_jkt) can only be redeemed with that key, the first-party app must
+ * always bind, and a bound grant's refresh token needs a proof from the same
+ * key. Proofs are checked before the code or refresh token is touched, so a
+ * client told to retry with a fresh nonce has lost nothing.
  */
 
 import { Router, type Request, type Response } from 'express';
 import type { Db } from '../db/index.ts';
-import { REFRESH_GRACE_SECONDS, RESOURCE_URI, refreshRequiresOfflineAccess } from './config.ts';
+import {
+  FIRST_PARTY_CLIENT_ID, ISSUER, REFRESH_GRACE_SECONDS, RESOURCE_URI, refreshRequiresOfflineAccess
+} from './config.ts';
+import { DpopError, currentDpopNonce, verifyDpopProof } from './dpop.ts';
 import { verifyPkce } from './crypto.ts';
 import { tokenDigest } from '../tokens/hash.ts';
 import { MemorySealedResponses, type SealedResponses } from './sealed.ts';
@@ -25,12 +35,32 @@ function fail(res: Response, status: number, error: string, description: string)
     .json({ error, error_description: description });
 }
 
+/**
+ * Verifies this request's DPoP proof, if it carries one. Returns the key's
+ * thumbprint, null when there is no proof, or sends the error and returns
+ * false.
+ */
+async function proofOf(req: Request, res: Response): Promise<string | null | false> {
+  const proof = req.get('dpop');
+  if (proof === undefined) return null;
+  try {
+    return (await verifyDpopProof(proof, { htm: 'POST', htu: `${ISSUER}/token` })).jkt;
+  } catch (error) {
+    if (!(error instanceof DpopError)) throw error;
+    fail(res, 400, error.code, error.message);
+    return false;
+  }
+}
+
 export function tokenRoutes(db: Db): Router {
   const router = Router();
   // Per app, so that two servers in one process never share sealed responses.
   const sealed = new MemorySealedResponses();
 
   router.post('/token', async (req: Request, res: Response) => {
+    // Every answer carries a fresh nonce, so a DPoP client never needs a
+    // round trip just to learn one.
+    res.set('DPoP-Nonce', currentDpopNonce());
     const grantType = req.body?.grant_type;
     if (grantType === 'authorization_code') return exchangeCode(db, req, res);
     if (grantType === 'refresh_token') return exchangeRefreshToken(db, sealed, req, res);
@@ -49,6 +79,13 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
   // an attacker does not already have.
   if (typeof client_id !== 'string' || client_id.length === 0) {
     return fail(res, 400, 'invalid_request', 'client_id is required.');
+  }
+
+  const presentedJkt = await proofOf(req, res);
+  if (presentedJkt === false) return;
+  // Our own app always binds its tokens to its Secure Enclave key.
+  if (client_id === FIRST_PARTY_CLIENT_ID && !presentedJkt) {
+    return fail(res, 400, 'invalid_dpop_proof', 'This client must present a DPoP proof.');
   }
 
   const record = await consumeAuthorizationCode(db, code);
@@ -81,6 +118,10 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
   if (resource !== undefined && resource !== record.resource) {
     return fail(res, 400, 'invalid_target', 'resource does not match the authorization request.');
   }
+  // RFC 9449 section 10: a code issued for a key is redeemable only with it.
+  if (record.dpopJkt && presentedJkt !== record.dpopJkt) {
+    return fail(res, 400, 'invalid_dpop_proof', 'This code is bound to a different DPoP key.');
+  }
 
   const tokens = await establishGrant(db, {
     code: code as string,
@@ -88,7 +129,8 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
     clientId: record.clientId,
     resource: record.resource,
     scope: record.scope,
-    withRefresh: !refreshRequiresOfflineAccess() || record.offlineAccess
+    withRefresh: !refreshRequiresOfflineAccess() || record.offlineAccess,
+    dpopJkt: presentedJkt
   });
   respond(res, tokens);
 }
@@ -102,6 +144,9 @@ async function exchangeRefreshToken(
     return fail(res, 400, 'invalid_request', 'client_id is required.');
   }
 
+  const presentedJkt = await proofOf(req, res);
+  if (presentedJkt === false) return;
+
   // Keyed by the presented token, and bound to the client, so only the same
   // client presenting the same token inside the window gets the copy.
   const sealKey = typeof refresh_token === 'string' ? `${client_id}:${tokenDigest(refresh_token)}` : '';
@@ -111,6 +156,7 @@ async function exchangeRefreshToken(
     resource,
     scope,
     graceSeconds: REFRESH_GRACE_SECONDS,
+    presentedJkt,
     seal: (issued) => sealed.seal(sealKey, tokenBody(issued), REFRESH_GRACE_SECONDS)
   });
 
@@ -131,6 +177,8 @@ async function exchangeRefreshToken(
       return fail(res, 400, 'invalid_target', 'resource does not match this grant.');
     case 'invalid_scope':
       return fail(res, 400, 'invalid_scope', 'A refresh cannot request scopes beyond the original grant.');
+    case 'invalid_dpop':
+      return fail(res, 400, 'invalid_dpop_proof', 'This refresh token is bound to a DPoP key; prove possession of it.');
     case 'invalid':
       return fail(res, 400, 'invalid_grant', {
         unknown: 'Unknown refresh token.',
@@ -143,7 +191,7 @@ async function exchangeRefreshToken(
 function tokenBody(tokens: IssuedTokens) {
   return {
     access_token: tokens.accessToken,
-    token_type: 'Bearer',
+    token_type: tokens.tokenType,
     expires_in: tokens.expiresIn,
     ...(tokens.refreshToken ? { refresh_token: tokens.refreshToken } : {}),
     scope: tokens.scope

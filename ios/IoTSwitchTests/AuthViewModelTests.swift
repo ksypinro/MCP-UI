@@ -1,107 +1,85 @@
 import XCTest
 @testable import IoTSwitch
 
-/// Spec section 5.2.
+/// Spec section 5.2 as revised: no credential fields in the app; Log In and
+/// Sign Up open the authorization server's page in the system browser.
 @MainActor
 final class AuthViewModelTests: XCTestCase {
 
-    private func makeViewModel(_ api: StubAPIClient) -> AuthViewModel {
-        AuthViewModel(session: SessionController(api: api, storage: InMemoryTokenStorage()))
+    private func make(_ api: StubAPIClient, _ web: StubWebAuthenticator) -> (AuthViewModel, SessionController) {
+        let session = SessionController(
+            api: api, storage: InMemoryTokenStorage(),
+            auth: .development(URL(string: "http://localhost:4000")!),
+            web: web, keyring: DPoPKeyring(store: InMemoryDPoPKeyStore())
+        )
+        return (AuthViewModel(session: session), session)
     }
 
-    func testLogInSignsTheUserIn() async {
+    func testSignUpOpensTheBrowserOnTheSignUpForm() async {
         let api = StubAPIClient()
-        api.sessionResults = [.success(.fixture())]
-        let viewModel = makeViewModel(api)
-        viewModel.username = "  sam  "
-        viewModel.password = "correct horse battery staple"
+        let web = StubWebAuthenticator()
+        api.pushResults = [.success(URL(string: "http://localhost:4000/authorize?request_uri=x")!)]
+        let (viewModel, _) = make(api, web)
 
-        await viewModel.submit()
+        await viewModel.start(.signUp)
 
-        XCTAssertEqual(api.calls.first, .logIn("sam"), "the username is trimmed")
-        XCTAssertNil(viewModel.formError)
+        guard case let .push(request)? = api.calls.first else { return XCTFail("nothing was pushed") }
+        XCTAssertTrue(request.signUp)
+        XCTAssertEqual(web.opened.count, 1)
     }
 
-    func testThePasswordIsNotTrimmed() async {
+    func testOnlyTheTappedButtonShowsProgress() async {
         let api = StubAPIClient()
-        api.sessionResults = [.success(.fixture())]
-        let viewModel = makeViewModel(api)
-        viewModel.username = "sam"
-        viewModel.password = "  spaces matter  "
+        let web = StubWebAuthenticator()
+        api.pushResults = [.success(URL(string: "http://localhost:4000/authorize")!)]
+        let (viewModel, _) = make(api, web)
+        var modeWhileOpen: AuthViewModel.Mode?
+        web.respond = { _ in
+            modeWhileOpen = viewModel.activeMode
+            throw AuthError.cancelled
+        }
 
-        await viewModel.submit()
+        await viewModel.start(.signUp)
 
-        // Trimming here would silently change the password and make a
-        // generated one impossible to use.
-        XCTAssertNil(viewModel.passwordError)
-        XCTAssertNil(viewModel.formError)
+        XCTAssertEqual(modeWhileOpen, .signUp)
+        XCTAssertNil(viewModel.activeMode)
     }
 
-    func testAFieldScopedErrorLandsOnItsField() async {
+    func testClosingTheSheetShowsNoError() async {
         let api = StubAPIClient()
-        api.sessionResults = [.failure(APIError.api(
-            code: "USERNAME_TAKEN", message: "That username is already taken.",
-            field: "username", status: 409
-        ))]
-        let viewModel = makeViewModel(api)
-        viewModel.mode = .signUp
-        viewModel.username = "sam"
-        viewModel.password = "correct horse battery staple"
+        let web = StubWebAuthenticator()
+        api.pushResults = [.success(URL(string: "http://localhost:4000/authorize")!)]
+        web.respond = { _ in throw AuthError.cancelled }
+        let (viewModel, session) = make(api, web)
 
-        await viewModel.submit()
+        await viewModel.start(.logIn)
 
-        XCTAssertEqual(viewModel.usernameError, "That username is already taken.")
-        XCTAssertNil(viewModel.formError, "a field error is not also shown at form level")
+        XCTAssertNil(viewModel.errorMessage, "closing the sheet is a choice, not a failure")
+        XCTAssertFalse(viewModel.isWorking)
+        XCTAssertFalse(session.isSignedIn)
     }
 
-    func testAFailedLogInIsAReadableFormError() async {
+    func testAnUntrustworthyResponseIsExplained() async {
         let api = StubAPIClient()
-        api.sessionResults = [.failure(APIError.unauthenticated)]
-        let viewModel = makeViewModel(api)
-        viewModel.username = "sam"
-        viewModel.password = "wrong-password"
+        let web = StubWebAuthenticator()
+        api.pushResults = [.success(URL(string: "http://localhost:4000/authorize")!)]
+        web.respond = { _ in URL(string: "com.example.iotswitch:/oauth/callback?code=c&state=wrong&iss=http://localhost:4000")! }
+        let (viewModel, _) = make(api, web)
 
-        await viewModel.submit()
+        await viewModel.start(.logIn)
 
-        XCTAssertNotNil(viewModel.formError)
-        XCTAssertNil(viewModel.usernameError, "never hint which half was wrong")
-        XCTAssertNil(viewModel.passwordError)
+        XCTAssertEqual(viewModel.errorMessage, AuthError.stateMismatch.userMessage)
     }
 
-    func testEmptyFieldsAreCaughtBeforeAnyRequest() async {
+    func testAnUnreachableServerIsAReadableError() async {
         let api = StubAPIClient()
-        let viewModel = makeViewModel(api)
-        viewModel.username = "   "
-        viewModel.password = "something"
+        let web = StubWebAuthenticator()
+        api.pushResults = [.failure(APIError.network(message: "Could not reach the server."))]
+        let (viewModel, _) = make(api, web)
 
-        await viewModel.submit()
+        await viewModel.start(.logIn)
 
-        XCTAssertNotNil(viewModel.usernameError)
-        XCTAssertTrue(api.calls.isEmpty)
-    }
-
-    func testSwitchingModeClearsErrorsFromThePreviousAttempt() async {
-        let api = StubAPIClient()
-        api.sessionResults = [.failure(APIError.unauthenticated)]
-        let viewModel = makeViewModel(api)
-        viewModel.username = "sam"
-        viewModel.password = "wrong-password"
-        await viewModel.submit()
-        XCTAssertNotNil(viewModel.formError)
-
-        viewModel.switchTo(.signUp)
-
-        XCTAssertNil(viewModel.formError, "the message described the other mode's attempt")
-    }
-
-    func testCannotSubmitWithoutBothFields() {
-        let api = StubAPIClient()
-        let viewModel = makeViewModel(api)
-
-        XCTAssertFalse(viewModel.canSubmit)
-        viewModel.username = "sam"
-        XCTAssertFalse(viewModel.canSubmit)
-        viewModel.password = "correct horse battery staple"
-        XCTAssertTrue(viewModel.canSubmit)
+        XCTAssertEqual(viewModel.errorMessage, "Could not reach the server.")
+        XCTAssertTrue(web.opened.isEmpty, "the browser is not opened for a request the server never accepted")
     }
 }

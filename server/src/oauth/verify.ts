@@ -12,22 +12,29 @@ import { tokenDigestCandidates } from '../tokens/hash.ts';
 import { RESOURCE_URI, type Scope } from './config.ts';
 
 export type VerifiedToken =
-  | { ok: true; accountId: string; clientId: string; grantId: string; scopes: Scope[]; expiresIn: number }
+  | {
+      ok: true; accountId: string; clientId: string; grantId: string; scopes: Scope[]; expiresIn: number;
+      /** The DPoP key thumbprint this token is bound to, or null for a bearer token. */
+      cnfJkt: string | null;
+    }
   | { ok: false; reason: 'invalid_token' }
   | { ok: false; reason: 'insufficient_scope'; grantId: string; granted: Scope[]; required: Scope[] };
 
 export async function verifyOAuthAccessToken(
   db: Queryable,
   token: string | null | undefined,
-  requiredScopes: Scope[] = []
+  requiredScopes: Scope[] = [],
+  options: { audience?: string } = {}
 ): Promise<VerifiedToken> {
+  const audience = options.audience ?? RESOURCE_URI;
   // Garbage is refused by checksum, without a database round trip.
   if (!wellFormed('access', token)) return { ok: false, reason: 'invalid_token' };
 
   const { rows } = await db.query<{
     account_id: string; client_id: string; grant_id: string; scope: string; audience: string; expires_in: number;
+    cnf_jkt: string | null;
   }>(
-    `SELECT g.account_id, g.client_id, t.grant_id, t.scope, t.audience,
+    `SELECT g.account_id, g.client_id, t.grant_id, t.scope, t.audience, t.cnf_jkt,
             GREATEST(0, EXTRACT(EPOCH FROM (t.expires_at - now()))::int) AS expires_in
        FROM oauth_access_tokens t
        JOIN oauth_grants g ON g.id = t.grant_id
@@ -43,7 +50,7 @@ export async function verifyOAuthAccessToken(
   // RFC 8707: a token minted for another resource must never be accepted here,
   // however valid it is at that other resource. This is the check that stops
   // a token obtained for someone else's MCP server being replayed at ours.
-  if (row.audience !== RESOURCE_URI) return { ok: false, reason: 'invalid_token' };
+  if (row.audience !== audience) return { ok: false, reason: 'invalid_token' };
 
   const granted = row.scope.split(' ').filter(Boolean) as Scope[];
   const missing = requiredScopes.filter((scope) => !granted.includes(scope));
@@ -57,6 +64,7 @@ export async function verifyOAuthAccessToken(
     clientId: row.client_id,
     grantId: row.grant_id,
     scopes: granted,
-    expiresIn: row.expires_in
+    expiresIn: row.expires_in,
+    cnfJkt: row.cnf_jkt
   };
 }

@@ -1,8 +1,13 @@
 import Foundation
 import Security
 
+/// What survives a relaunch: the refresh token and who it belongs to.
+///
+/// The access token is deliberately not here. It lives in memory only, for
+/// at most its ten-minute life; after a cold start the app refreshes once. A
+/// refresh token on its own is also useless to a thief, because it is bound
+/// to a DPoP key that never leaves this device's Secure Enclave.
 struct StoredSession: Codable, Sendable, Equatable {
-    var accessToken: String
     var refreshToken: String
     var account: Account
 }

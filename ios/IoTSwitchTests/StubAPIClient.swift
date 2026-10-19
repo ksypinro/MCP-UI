@@ -6,10 +6,11 @@ import Foundation
 /// "never issue the inverse operation" is checked.
 final class StubAPIClient: APIClient, @unchecked Sendable {
     enum Call: Equatable {
-        case signUp(String)
-        case logIn(String)
+        case push(AuthorizationRequest)
+        case exchange(code: String, verifier: String)
         case refresh(String)
-        case logOut
+        case revoke(String)
+        case me(String)
         case list
         case get(String)
         case control(id: String, state: DeviceState, expectedVersion: Int)
@@ -19,15 +20,15 @@ final class StubAPIClient: APIClient, @unchecked Sendable {
     private let lock = NSLock()
     private(set) var calls: [Call] = []
 
-    var sessionResults: [Result<SessionResponse, Error>] = []
-    var refreshResults: [Result<RefreshResponse, Error>] = []
+    var pushResults: [Result<URL, Error>] = []
+    var exchangeResults: [Result<TokenResponse, Error>] = []
+    var meResults: [Result<Account, Error>] = []
+    var refreshResults: [Result<TokenResponse, Error>] = []
+    var revokeError: Error?
     var listResults: [Result<[Device], Error>] = []
     var getResults: [Result<Device, Error>] = []
     var controlResults: [Result<Device, Error>] = []
     var addResults: [Result<Device, Error>] = []
-    var logOutError: Error?
-    var expiredLogoutToken: String?
-    private(set) var logoutTokens: [String] = []
     var readGate: (@Sendable () async -> Void)?
 
     /// Blocks every call until released. Used to observe in-flight behaviour.
@@ -54,26 +55,29 @@ final class StubAPIClient: APIClient, @unchecked Sendable {
 
     // MARK: APIClient
 
-    func signUp(username: String, password: String) async throws -> SessionResponse {
-        record(.signUp(username)); await gate?()
-        return try next(&sessionResults, "signUp")
+    func pushAuthorization(_ request: AuthorizationRequest) async throws -> URL {
+        record(.push(request)); await gate?()
+        return try next(&pushResults, "pushAuthorization")
     }
 
-    func logIn(username: String, password: String) async throws -> SessionResponse {
-        record(.logIn(username)); await gate?()
-        return try next(&sessionResults, "logIn")
+    func exchangeCode(code: String, verifier: String, redirectURI: String) async throws -> TokenResponse {
+        record(.exchange(code: code, verifier: verifier)); await gate?()
+        return try next(&exchangeResults, "exchangeCode")
     }
 
-    func refresh(refreshToken: String) async throws -> RefreshResponse {
+    func refresh(refreshToken: String) async throws -> TokenResponse {
         record(.refresh(refreshToken)); await gate?()
         return try next(&refreshResults, "refresh")
     }
 
-    func logOut(accessToken: String) async throws {
-        record(.logOut)
-        lock.withLock { logoutTokens.append(accessToken) }
-        if accessToken == expiredLogoutToken { throw APIError.unauthenticated }
-        if let logOutError { throw logOutError }
+    func revoke(refreshToken: String) async throws {
+        record(.revoke(refreshToken))
+        if let revokeError { throw revokeError }
+    }
+
+    func me(accessToken: String) async throws -> Account {
+        record(.me(accessToken))
+        return try next(&meResults, "me")
     }
 
     func listDevices(accessToken: String) async throws -> [Device] {
@@ -122,26 +126,34 @@ extension Account {
     }
 }
 
-extension SessionResponse {
-    static func fixture(access: String = "access-1", refresh: String = "refresh-1") -> SessionResponse {
-        SessionResponse(account: .fixture(), accessToken: access, refreshToken: refresh, expiresIn: 900)
+extension TokenResponse {
+    static func fixture(access: String = "access-2", refresh: String? = "refresh-2", expiresIn: Int = 600) -> TokenResponse {
+        TokenResponse(accessToken: access, tokenType: "DPoP", expiresIn: expiresIn, refreshToken: refresh, scope: nil)
     }
 }
 
-extension RefreshResponse {
-    static func fixture(access: String = "access-2", refresh: String = "refresh-2") -> RefreshResponse {
-        RefreshResponse(accessToken: access, refreshToken: refresh, expiresIn: 900)
-    }
-}
-
+/// A signed-in session whose access token is still fresh, so a test starts
+/// from "signed in and working" without a refresh being queued first.
 @MainActor
-func makeSignedInSession(_ api: StubAPIClient) -> SessionController {
+func makeSignedInSession(_ api: StubAPIClient, storage: InMemoryTokenStorage? = nil) -> SessionController {
     SessionController(
         api: api,
-        storage: InMemoryTokenStorage(
-            StoredSession(accessToken: "access-1", refreshToken: "refresh-1", account: .fixture())
-        )
+        storage: storage ?? InMemoryTokenStorage(StoredSession(refreshToken: "refresh-1", account: .fixture())),
+        initialAccess: (token: "access-1", expiresIn: 600)
     )
+}
+
+/// The system browser, scripted: answers with whatever callback the test
+/// builds from the authorization URL it was asked to open.
+@MainActor
+final class StubWebAuthenticator: WebAuthenticator {
+    var respond: (URL) throws -> URL = { _ in throw AuthError.cancelled }
+    private(set) var opened: [URL] = []
+
+    func authenticate(url: URL, callback: AuthCallback) async throws -> URL {
+        opened.append(url)
+        return try respond(url)
+    }
 }
 
 /// Holds a call open until a test releases it, so in-flight behaviour can be

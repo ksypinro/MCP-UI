@@ -30,7 +30,7 @@ export const CRITERIA: Criterion[] = [
       'sign-up creates one account and rejects a duplicate under folding',
       'sign-up returns an account and a session'
     ],
-    ios: ['SessionControllerTests.testSignUpStoresTheSessionForNextLaunch']
+    ios: ['SessionControllerTests.testSigningInPushesTheRequestAndKeepsOnlyTheRefreshToken']
   },
   {
     id: 'AC-02', scenario: 'Invalid or duplicate registration',
@@ -38,8 +38,8 @@ export const CRITERIA: Criterion[] = [
       'usernames and passwords are validated at the boundary',
       'a duplicate username is a 409 naming the field',
       'a weak password is a 422 naming the field'
-    ],
-    ios: ['AuthViewModelTests.testAFieldScopedErrorLandsOnItsField']
+    ]
+    // Since phase 3 these errors are shown on the hosted page, not in the app.
   },
   {
     id: 'AC-03', scenario: 'Login and logout',
@@ -48,7 +48,7 @@ export const CRITERIA: Criterion[] = [
       'credential verification is case-insensitive on the username only',
       'logout invalidates access tokens that were already issued'
     ],
-    ios: ['SessionControllerTests.testLogOutClearsLocalStateEvenIfTheServerCallFails']
+    ios: ['SessionControllerTests.testLogOutClearsLocalStateEvenIfRevocationFails']
   },
   {
     id: 'AC-04', scenario: 'Add a device',
@@ -330,5 +330,64 @@ export const CRITERIA: Criterion[] = [
   {
     id: 'AC-37', scenario: 'Every change names the user, client, grant and adapter behind it',
     evidence: ['every change is audited with the client, grant and adapter behind it']
+  },
+  {
+    id: 'AC-38', scenario: 'A DPoP-bound token is useless without its key',
+    evidence: [
+      'a bound token is useless without its key',
+      'a proof from another key is refused for a bound token',
+      'a proof is refused unless every claim matches this request',
+      'a proof cannot be replayed',
+      'a proof carrying its private key is refused',
+      'a host that offers DPoP gets bound tokens at the MCP endpoint too'
+    ],
+    ios: [
+      'DPoPTests.testAProofNamesTheRequestAndVerifiesWithItsOwnKey',
+      'APIClientTests.testEveryRequestCarriesAProofAndTheDPoPScheme',
+      'APIClientTests.testAServerNonceIsPickedUpAndTheRequestRetriedOnce'
+    ],
+    gap: 'The Secure Enclave key is exercised only on a physical device; the '
+      + 'Simulator falls back to a software key with the same interface.'
+  },
+  {
+    id: 'AC-39', scenario: 'The native app never handles a password',
+    evidence: [
+      'the app signs in through PAR and gets DPoP-bound tokens for the API',
+      'the universal-link association is published only with an Apple team'
+    ],
+    ios: [
+      'AuthViewModelTests.testSignUpOpensTheBrowserOnTheSignUpForm',
+      'SessionControllerTests.testAResponseFromAnotherIssuerIsRefused',
+      'SessionControllerTests.testAResponseToAnotherRequestIsRefused'
+    ],
+    gap: 'The callback is the custom scheme until an Apple team is chosen (G3); '
+      + 'then the universal link replaces it.'
+  },
+  {
+    id: 'AC-40', scenario: 'The app keeps its session through flaky networks, and only with its key',
+    evidence: ['refreshing needs the same key'],
+    ios: [
+      'SessionControllerTests.testATokenNearExpiryIsRefreshedBeforeItIsUsed',
+      'SessionControllerTests.testConcurrentFailuresRefreshExactlyOnce',
+      'SessionControllerTests.testANetworkFailureDuringRefreshKeepsTheSession'
+    ]
+  },
+  {
+    id: 'AC-41', scenario: 'The first-party app must push its authorization request',
+    evidence: [
+      'the app must push its request, bind a key, and ask only for the API',
+      'a pushed request is used once, and the browser cannot change it',
+      'a code bound to one key cannot be redeemed with another, and nothing is spent by trying'
+    ]
+  },
+  {
+    id: 'AC-42', scenario: 'The legacy password endpoints can be retired',
+    evidence: [
+      'legacy sign-in is marked deprecated, and can be retired',
+      'the API can be told to accept only DPoP-bound tokens'
+    ],
+    gap: 'Deprecated, not yet off: the legacy endpoints answer with Deprecation '
+      + 'and Sunset headers until the browser sign-in build has shipped. Then '
+      + 'LEGACY_FIRST_PARTY_AUTH=off and DPOP_REQUIRED_FOR_API=on.'
   }
 ];

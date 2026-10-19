@@ -1,6 +1,6 @@
 # Testing and verification
 
-270 automated tests, plus three harnesses for the things tests cannot reach.
+298 automated tests, plus three harnesses for the things tests cannot reach.
 This document explains what each layer proves — and, as importantly, what it
 does not.
 
@@ -10,9 +10,9 @@ does not.
 
 | | Count | Command | What it establishes |
 | --- | --- | --- | --- |
-| Server | 221 | `npm test` | Domain rules, HTTP contract, OAuth, MCP protocol, views |
-| iOS | 49 | `xcodebuild … test` | View-model state machines, session lifecycle, transport |
-| Acceptance | 37 criteria | `npm run acceptance` | Which of §12 (and nine redesign criteria) the suites actually establish |
+| Server | 238 | `npm test` | Domain rules, HTTP contract, OAuth, DPoP and PAR, MCP protocol, views |
+| iOS | 60 | `xcodebuild … test` | View-model state machines, browser sign-in, DPoP proofs, refresh, transport |
+| Acceptance | 42 criteria | `npm run acceptance` | Which of §12 (and fourteen redesign criteria) the suites actually establish |
 | Client conformance | 18 checks | `npm run client-check` | That a compliant MCP client can find its way through |
 | Host readiness | 9 checks | `npm run host-check` | That everything failable without a host has already failed |
 | Views | manual | `node tools/mock-host/run.mjs` | What a view looks like and does |
@@ -24,7 +24,7 @@ does not.
 ```bash
 cd server
 npm install
-npm test                                   # 221
+npm test                                   # 238
 npm run typecheck
 npm run acceptance                         # the criteria map
 
@@ -64,6 +64,8 @@ to WebAssembly, so there is no database to provision.
 | `exchange.test.ts` | 7 | Token exchange: claims, narrowing, adapter separation, lifetimes, caching, revocation, re-exchange |
 | `policy.test.ts` | 7 | Policy table completeness, write budgets on MCP and REST, the audit actor chain |
 | `device-service.test.ts` | 4 | Internal token verification, `alg: none` and key confusion, no adapter bypass |
+| `dpop.test.ts` | 7 | DPoP proofs: every claim, the nonce, replay, key mismatch, private keys refused |
+| `first-party.test.ts` | 10 | The iOS app's PAR flow, bound tokens and refresh, code binding, `DPOP_REQUIRED_FOR_API`, legacy sunset, the app-site association, DPoP at `/mcp` |
 
 ---
 
@@ -74,7 +76,7 @@ npm run acceptance
 ```
 
 ```
-27 proven, 7 partial, 3 open   (221 tests ran, 221 passed)
+29 proven, 10 partial, 3 open   (238 tests ran, 238 passed)
 ```
 
 It maps each criterion in §12 to the tests that establish it. Evidence is
@@ -90,12 +92,15 @@ rather than letting a green suite imply the product is finished:
 | | Missing |
 | --- | --- |
 | AC-13, AC-14, AC-17 | Whether a host renders the views, and completes the flow |
-| AC-19, AC-20 | A real iPhone; iPad, which nothing exercises |
+| AC-19, AC-20, AC-38 | A real iPhone, and its Secure Enclave; iPad, which nothing exercises |
 | AC-23 | That a host *enforces* the policy we declare |
 | AC-27 | Whether every write is confirmed |
 | AC-28 | How many rows survive an inline card |
 
-Those close in [`spike/FINDINGS.md`](../spike/FINDINGS.md).
+Those close in [`spike/FINDINGS.md`](../spike/FINDINGS.md). Two more are
+waiting on decisions rather than hardware: AC-39 on an Apple team for the
+universal-link callback, and AC-42 on the browser sign-in build shipping before
+the legacy endpoints are switched off.
 
 ---
 

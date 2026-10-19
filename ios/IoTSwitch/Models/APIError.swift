@@ -42,6 +42,12 @@ enum APIError: Error, Equatable {
         }
     }
 
+    /// The authorization server refused the credential itself (OAuth 2.1:
+    /// invalid_grant), or it was bound to a key this app no longer holds.
+    var isRejectedCredential: Bool {
+        self == .unauthenticated || code == "invalid_grant" || code == "invalid_dpop_proof"
+    }
+
     var isVersionConflict: Bool { code == "DEVICE_VERSION_CONFLICT" }
     var isNameConflict: Bool { code == "DEVICE_NAME_CONFLICT" }
     var isNotFound: Bool { code == "DEVICE_NOT_FOUND" }

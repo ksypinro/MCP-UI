@@ -17,6 +17,8 @@ Version 1.0 was internally coherent but rested on host-platform facts that no lo
 5. **Domain gaps closed:** `normalizedName` added to Device, normalization folds defined, a complete error-code enum, a list ordering contract, a per-account device cap, and explicit no-op `updatedAt` behavior.
 6. **Sequencing changed.** §13 gains a step 0 feasibility spike so the host-dependent unknowns are settled before the native application is built.
 
+**Amended 2026-10-18 (authentication redesign, phase 3).** The iOS app no longer has credential fields. It signs in on the same hosted page as the AI hosts, through the system browser sheet, with tokens bound to a key in the Secure Enclave. §2, §5.2, §7.1 and §10.1 are revised to match; the design is in `docs/authentication-architecture/`.
+
 ## 1. Product objective
 
 Build an application that simulates controlling a user's IoT devices. Each device has exactly two persisted states: **On** and **Off**. A user can create an account, log in, add a device, view their devices, inspect one device, and change its state with a switch.
@@ -47,8 +49,8 @@ The following assumptions make this draft implementable. They are proposed defau
 | New device state | Every new device starts Off. |
 | Device names | Required; unique within the owner's account under the normalization fold defined in §4.2. |
 | Authentication | Exactly two credential inputs: username and password. |
-| Authentication presentation | Credentials are entered only on our hosted authorization page, reached through the host's OAuth flow. No credential entry occurs inside an MCP App, a tool argument, or a conversation. |
-| Minimum OS version | iOS 17.0, pending confirmation against the selected Swift toolchain. Raise to 18.0 only if a required API demands it. |
+| Authentication presentation | Credentials are entered only on our hosted authorization page: reached through the host's OAuth flow for MCP, and through the system browser sheet for the iOS app. No credential entry occurs inside an MCP App, a tool argument, a conversation, or a native screen. |
+| Minimum OS version | iOS 18.0. Raised from 17.0 for browser sign-in (decided 2026-10-18). |
 
 ### 2.1 Included in version 1
 
@@ -175,12 +177,12 @@ Client-visible device example:
 
 ### 5.2 Authentication screen
 
-- Present **Log In** and **Sign Up** modes with exactly two credential fields: **Username** and **Password**.
-- Mask the password by default and provide a Show/Hide control.
-- Support password autofill, paste, and the appropriate keyboard/content types.
-- Show validation errors adjacent to the affected field and a readable form-level error for failed authentication.
-- Disable repeat submissions while a request is in progress.
-- After successful sign-up, establish a session and open the empty Devices screen.
+- Present **Log In** and **Sign Up** buttons and no credential fields. Each opens the hosted authorization page in the system browser sheet (`ASWebAuthenticationSession`, ephemeral), on the matching form.
+- The hosted page owns the credential fields and their behaviour: masking, autofill, paste, field-adjacent validation errors, and a generic error for failed authentication. The app never sees the password.
+- Say on the screen that sign-in happens on the service's own page.
+- Disable repeat submissions while sign-in is in progress, and show progress on the button that was used.
+- Closing the sheet or declining is not an error: return quietly to this screen. Explain any other failure (an unreachable server, a response that fails its `state` or `iss` check) in readable text.
+- After successful sign-up, open the empty Devices screen.
 - After login, fetch the user's devices. If a safe read-only destination was pending, restore it.
 - Do not automatically execute a previously attempted add/control action merely because login succeeded; obtain a fresh user action or honor the external host's explicit approval flow.
 
@@ -304,19 +306,21 @@ Every error response carries `requestId`, which is also written to the audit log
 
 ### 7.1 Application authentication operations
 
-The following are additional authentication APIs, separate from the four device APIs:
+The iOS app is an OAuth client of the same authorization server the AI hosts use (client `iot-switch-ios`, public, pre-registered). It uses these endpoints, separate from the four device APIs:
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /v1/auth/signup` | Register using `{ "username", "password" }`; establish a first-party session on success. |
-| `POST /v1/auth/login` | Verify `{ "username", "password" }`; establish a first-party session. |
-| `GET /v1/auth/me` | Return authenticated account ID and username. |
-| `POST /v1/auth/refresh` | Renew a valid first-party session according to the refresh policy below. |
-| `POST /v1/auth/logout` | Revoke the current first-party session and its refresh credentials. |
+| `POST /par` | Push the authorization request (RFC 9126): PKCE challenge, `state`, `redirect_uri`, `dpop_jkt`, and `prompt=create` for Sign Up. Returns a single-use `request_uri` that lives 60 seconds. Mandatory for this client. |
+| `GET /authorize?client_id&request_uri` | The hosted sign-in or sign-up page, opened in the system browser sheet. Redirects to the app's callback with `code`, `state` and `iss`. |
+| `POST /token` | Exchange the code, or rotate the refresh token. Every request carries a DPoP proof (RFC 9449) from the app's Secure Enclave key. |
+| `POST /revoke` | Revoke the grant on logout. |
+| `GET /v1/auth/me` | Return the authenticated account ID and username. |
 
-Native login responses may contain access and refresh tokens for the first-party app. Browser login uses a secure session cookie. Neither mechanism is an OAuth password grant for third-party clients.
+Every API request carries `Authorization: DPoP <token>` and a fresh proof. A token without its key is useless.
 
-**Session policy.** Access tokens live 15 minutes; refresh tokens live 30 days with rotation on each use and reuse detection that revokes the whole session family. A client attempts refresh once per failed protected request, then falls back to showing authentication.
+**Session policy.** The app's access tokens live 10 minutes, are bound to its key, and are held only in memory. Refresh tokens live 30 days in the Keychain (this device only), rotate on each use, and are bound to the same key; reuse outside a 30-second grace window revokes the whole grant. The app refreshes proactively when a quarter of the access token's life remains, once for all concurrent callers, and signs out only when the server rejects the refresh token.
+
+**Legacy endpoints.** `POST /v1/auth/signup`, `login`, `refresh` and `logout` served the password-field app. They are deprecated (`Deprecation` and `Sunset` headers) and are switched off with `LEGACY_FIRST_PARTY_AUTH=off` once the browser sign-in build has shipped. Neither they nor the flow above is an OAuth password grant.
 
 **Revocation is checked per request.** §7.2 requires that a token issued before logout stops working immediately. That rules out a bare stateless JWT validated only by signature and expiry. Implement one of:
 
@@ -555,8 +559,8 @@ Accordingly:
 ### 10.1 Native app: sign up and add the first device
 
 1. User opens the app and sees Log In / Sign Up.
-2. User selects Sign Up and enters username and password.
-3. Authentication service creates the account and session.
+2. User selects Sign Up. The hosted sign-up page opens in the system browser sheet, and the user enters a username and password there.
+3. Authentication service creates the account and returns the app to its callback, which exchanges the code for key-bound tokens.
 4. Devices screen loads and shows its empty state.
 5. User selects Add Device, enters "Bedroom Lamp," and submits.
 6. Device service creates the owned device in Off state.

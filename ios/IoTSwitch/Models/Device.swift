@@ -35,15 +35,53 @@ struct DeviceListResponse: Codable, Sendable { let devices: [Device] }
 struct DeviceResponse: Codable, Sendable { let device: Device }
 struct AccountResponse: Codable, Sendable { let account: Account }
 
-struct SessionResponse: Codable, Sendable {
-    let account: Account
+/// A token endpoint response (RFC 6749 section 5.1).
+struct TokenResponse: Decodable, Sendable, Equatable {
     let accessToken: String
-    let refreshToken: String
+    /// "DPoP" for this app: every token is bound to its key.
+    let tokenType: String
     let expiresIn: Int
+    let refreshToken: String?
+    let scope: String?
+
+    enum CodingKeys: String, CodingKey {
+        case accessToken = "access_token"
+        case tokenType = "token_type"
+        case expiresIn = "expires_in"
+        case refreshToken = "refresh_token"
+        case scope
+    }
 }
 
-struct RefreshResponse: Codable, Sendable {
-    let accessToken: String
-    let refreshToken: String
+/// A pushed authorization response (RFC 9126).
+struct PushedAuthorizationResponse: Decodable, Sendable {
+    let requestURI: String
     let expiresIn: Int
+
+    enum CodingKeys: String, CodingKey {
+        case requestURI = "request_uri"
+        case expiresIn = "expires_in"
+    }
+}
+
+/// An OAuth error body (RFC 6749 section 5.2).
+struct OAuthErrorResponse: Decodable, Sendable {
+    let error: String
+    let errorDescription: String?
+
+    enum CodingKeys: String, CodingKey {
+        case error
+        case errorDescription = "error_description"
+    }
+}
+
+/// What the app pushes to start a sign-in.
+struct AuthorizationRequest: Sendable, Equatable {
+    let codeChallenge: String
+    let state: String
+    let redirectURI: String
+    /// The thumbprint of the DPoP key the code will be bound to.
+    let dpopThumbprint: String
+    /// Open the hosted page on its sign-up form.
+    let signUp: Bool
 }

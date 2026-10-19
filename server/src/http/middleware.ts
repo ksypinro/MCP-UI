@@ -4,8 +4,11 @@ import type { Db } from '../db/index.ts';
 import { AppError, isAppError } from '../errors.ts';
 import { verifyAccessToken } from '../domain/sessions.ts';
 import type { VerifiedCaller } from '../domain/types.ts';
-import { FIRST_PARTY_CLIENT_ID } from '../oauth/exchange.ts';
-import { SCOPES } from '../oauth/config.ts';
+import { API_RESOURCE, DPOP_ALGORITHMS, FIRST_PARTY_CLIENT_ID, SCOPES } from '../oauth/config.ts';
+import { verifyOAuthAccessToken } from '../oauth/verify.ts';
+import { DpopError, currentDpopNonce, verifyDpopProof } from '../oauth/dpop.ts';
+import { credentialFrom, requestHtu } from '../security/credentials.ts';
+import { API_BASE_URL } from '../config.ts';
 
 export interface RequestContext {
   requestId: string;
@@ -34,10 +37,13 @@ export function withRequestId(): RequestHandler {
   };
 }
 
-function bearer(req: Request): string | null {
-  const header = req.get('authorization');
-  if (!header?.toLowerCase().startsWith('bearer ')) return null;
-  return header.slice(7).trim() || null;
+/**
+ * With DPOP_REQUIRED_FOR_API=on the API accepts only DPoP-bound tokens: no
+ * legacy first-party sessions, no bearer tokens. Off until the iOS build
+ * that binds its tokens is the minimum supported version.
+ */
+function dpopRequired(): boolean {
+  return process.env.DPOP_REQUIRED_FOR_API === 'on';
 }
 
 /**
@@ -51,8 +57,51 @@ function bearer(req: Request): string | null {
 export function authenticate(db: Db, options: { required: boolean }): RequestHandler {
   return async (req, res, next) => {
     try {
-      const token = bearer(req);
-      const verified = await verifyAccessToken(db, token);
+      const credential = credentialFrom(req);
+      const token = credential?.token ?? null;
+      // A fresh nonce on every response to a DPoP client, so it rarely needs
+      // a round trip to learn one.
+      if (credential?.scheme === 'DPoP') res.set('DPoP-Nonce', currentDpopNonce());
+
+      // The app's OAuth tokens: audience the REST API, bound to its Secure
+      // Enclave key. A bound token must come with a proof from that key.
+      const oauth = token ? await verifyOAuthAccessToken(db, token, [], { audience: API_RESOURCE }) : null;
+      if (oauth?.ok && token) {
+        if (oauth.cnfJkt) {
+          try {
+            if (credential?.scheme !== 'DPoP') {
+              throw new DpopError('invalid_dpop_proof', 'This token must be presented with the DPoP scheme.');
+            }
+            await verifyDpopProof(req.get('dpop'), {
+              htm: req.method, htu: requestHtu(API_BASE_URL, req), accessToken: token, expectedJkt: oauth.cnfJkt
+            });
+          } catch (error) {
+            if (!(error instanceof DpopError)) throw error;
+            res.set('WWW-Authenticate',
+              `DPoP error="${error.code}", error_description="${error.message}", algs="${DPOP_ALGORITHMS.join(' ')}"`);
+            res.set('DPoP-Nonce', currentDpopNonce());
+            throw new AppError('UNAUTHENTICATED', error.message);
+          }
+        } else if (dpopRequired()) {
+          throw new AppError('UNAUTHENTICATED', 'This API requires DPoP-bound tokens.');
+        }
+        const ctx = context(res);
+        ctx.caller = {
+          kind: 'verified',
+          accountId: oauth.accountId,
+          clientId: oauth.clientId,
+          grantId: oauth.grantId,
+          channel: 'native',
+          scopes: oauth.scopes,
+          requestId: ctx.requestId,
+          credential: token
+        };
+        next();
+        return;
+      }
+
+      // Legacy first-party sessions, until LEGACY_FIRST_PARTY_AUTH is retired.
+      const verified = dpopRequired() ? null : await verifyAccessToken(db, token);
       if (verified && token) {
         const ctx = context(res);
         // A first-party session holds every device scope; its family is its

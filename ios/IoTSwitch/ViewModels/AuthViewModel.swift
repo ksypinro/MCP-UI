@@ -1,6 +1,11 @@
 import Foundation
 
-/// Spec section 5.2. Exactly two credential fields, no email, no confirmation.
+/// The sign-in screen. Spec section 5.2, as revised for browser sign-in.
+///
+/// There are no credential fields here any more. Log In and Sign Up both open
+/// the authorization server's page in the system browser sheet, where the
+/// person types their password (or uses a passkey) on the real site, with
+/// autofill, and where this app cannot read or script anything.
 @MainActor
 final class AuthViewModel: ObservableObject {
     enum Mode: String, CaseIterable, Equatable {
@@ -8,15 +13,10 @@ final class AuthViewModel: ObservableObject {
         case signUp = "Sign Up"
     }
 
-    @Published var mode: Mode = .logIn
-    @Published var username = ""
-    @Published var password = ""
-    @Published var isPasswordVisible = false
-
-    @Published private(set) var usernameError: String?
-    @Published private(set) var passwordError: String?
-    @Published private(set) var formError: String?
-    @Published private(set) var isSubmitting = false
+    /// The button that started the sign-in in progress, so only it spins.
+    @Published private(set) var activeMode: Mode?
+    var isWorking: Bool { activeMode != nil }
+    @Published private(set) var errorMessage: String?
 
     private let session: SessionController
 
@@ -24,65 +24,22 @@ final class AuthViewModel: ObservableObject {
         self.session = session
     }
 
-    var canSubmit: Bool {
-        !isSubmitting && !username.trimmingCharacters(in: .whitespaces).isEmpty && !password.isEmpty
-    }
-
-    func switchTo(_ mode: Mode) {
-        guard mode != self.mode else { return }
-        self.mode = mode
-        // Field errors describe the previous attempt in the previous mode.
-        usernameError = nil
-        passwordError = nil
-        formError = nil
-    }
-
-    func submit() async {
-        guard !isSubmitting else { return } // section 5.2: no repeat submissions
-        usernameError = nil
-        passwordError = nil
-        formError = nil
-
-        let trimmedUsername = username.trimmingCharacters(in: .whitespaces)
-        // The password is deliberately not trimmed: spaces are legitimate
-        // characters in a generated password and removing them silently makes
-        // a password that cannot be typed back in.
-        guard !trimmedUsername.isEmpty else {
-            usernameError = "Enter your username."
-            return
-        }
-        guard !password.isEmpty else {
-            passwordError = "Enter your password."
-            return
-        }
-
-        isSubmitting = true
-        defer { isSubmitting = false }
+    func start(_ mode: Mode) async {
+        guard !isWorking else { return } // section 5.2: no repeat submissions
+        errorMessage = nil
+        activeMode = mode
+        defer { activeMode = nil }
 
         do {
-            switch mode {
-            case .logIn:
-                try await session.logIn(username: trimmedUsername, password: password)
-            case .signUp:
-                try await session.signUp(username: trimmedUsername, password: password)
-            }
-            // Only on success: holding a password in memory after we are done
-            // with it serves no purpose.
-            password = ""
+            try await session.signIn(signUp: mode == .signUp)
+        } catch AuthError.cancelled {
+            // Closing the sheet is a choice, not a failure.
+        } catch let error as AuthError {
+            errorMessage = error.userMessage
         } catch let error as APIError {
-            present(error)
+            errorMessage = error.userMessage
         } catch {
-            formError = error.localizedDescription
-        }
-    }
-
-    private func present(_ error: APIError) {
-        // A field-scoped error belongs next to its field; everything else is a
-        // form-level message. Section 5.2.
-        switch error.field {
-        case "username": usernameError = error.userMessage
-        case "password": passwordError = error.userMessage
-        default: formError = error.userMessage
+            errorMessage = error.localizedDescription
         }
     }
 }

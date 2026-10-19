@@ -72,11 +72,11 @@ footer{border-top:1px solid var(--line);padding:32px;text-align:center;font-size
   article h2{font-size:24px;margin-top:64px}figure a{padding:14px;border-radius:12px}}
 </style></head><body>
 <div id="progress"></div><div id="lb" role="dialog" aria-modal="true" aria-label="Diagram"><button class="close" type="button" aria-label="Close">×</button><img alt=""></div>
-<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 39 min read</div></header>
+<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 41 min read</div></header>
 <div class="layout">
 <main>
 <section class="hero"><div class="eyebrow">Implementation plan</div><h1>Authentication v2 Implementation Plan</h1>
-<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>39 min read</span></div></section>
+<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>41 min read</span></div></section>
 <article><p><strong>Status:</strong> Proposed · <strong>Date:</strong> 18 October 2026 · <strong>Implements:</strong> <a href="authentication-architecture.md">Authentication Architecture v2</a> · <strong>Codebase:</strong> <code>server/</code> (Node 22+, TypeScript run by type-stripping, Express 5, MCP SDK 1.30, PGlite) and <code>ios/</code> (SwiftUI, iOS 17.0, Swift 5)</p>
 <p>This plan turns the architecture into <strong>46 pull requests across six phases</strong> (six of them are the iOS series 3.6a–f). Every PR is small enough to review in one sitting and ships green. Every behaviour change sits behind a flag or is additive until its phase exit review. Section references such as &quot;arch §7.3&quot; point into the architecture document.</p>
 <hr>
@@ -221,7 +221,7 @@ footer{border-top:1px solid var(--line);padding:32px;text-align:center;font-size
 <tr>
 <td>G2</td>
 <td>Phase 3 starts</td>
-<td>Accept the <code>requirement.md</code> §5.2 change (native form → system browser sheet) and the iOS 17.4 minimum</td>
+<td><strong>Decided 18 Oct 2026:</strong> the native form is replaced by the system browser sheet, and the minimum is <strong>iOS 18</strong> (above the 17.4 the <code>.https</code> callback needs)</td>
 </tr>
 <tr>
 <td>G3</td>
@@ -794,7 +794,7 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 </tr>
 <tr>
 <td><strong>3.6c</strong> Auth coordinator</td>
-<td><code>Auth/AuthCoordinator.swift</code>: PKCE pair, PAR request (with <code>dpop_jkt</code>), <code>ASWebAuthenticationSession(url:callback: .https(host:path:))</code> with an ephemeral session, exact <code>state</code>/<code>iss</code> check, code exchange with a DPoP proof. <strong>Raises <code>IPHONEOS_DEPLOYMENT_TARGET</code> to 17.4</strong>, which the <code>.https</code> callback requires (gate G2)</td>
+<td><code>Auth/AuthCoordinator.swift</code>: PKCE pair, PAR request (with <code>dpop_jkt</code>), <code>ASWebAuthenticationSession(url:callback: .https(host:path:))</code> with an ephemeral session, exact <code>state</code>/<code>iss</code> check, code exchange with a DPoP proof. <strong>Raises <code>IPHONEOS_DEPLOYMENT_TARGET</code> to 18.0</strong> (gate G2; the <code>.https</code> callback needs 17.4)</td>
 <td>4 d</td>
 </tr>
 <tr>
@@ -835,6 +835,20 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <li>iOS on a physical device: sign up with a password, sign in again with a passkey (once 4.5 lands, or retest then), control a device, airplane-mode refresh, logout;</li>
 <li>the host flows unaffected;</li>
 <li>AC-38 to AC-42.</li>
+</ul>
+<h3 id="phase-3-as-built">Phase 3 as built</h3>
+<ul>
+<li><strong>One server change set, one iOS change set.</strong> The phase shipped as one branch rather than seven PRs and a parallel iOS series. <code>oauth/dpop.ts</code> is the library (3.1); the token endpoint, <code>/authorize</code> and <code>POST /par</code> carry the binding (3.2, 3.4); <code>security/credentials.ts</code>, the MCP gate and the API middleware enforce it (3.3); <code>http/app-links.ts</code> serves the association (3.5); <code>ios/IoTSwitch/Auth/</code> and the rewritten <code>SessionController</code> and <code>APIClient</code> are 3.6.</li>
+<li><strong>Nonces and replay.</strong> The nonce is an HMAC of the five-minute window under <code>INTERNAL_MAC_KEY</code>, current and previous accepted. It is checked after the signature, so an unauthenticated request can neither learn nor burn one, and before the <code>jti</code> is claimed, so a client told to fetch a fresh nonce loses nothing. The replay store is per process, like the other in-memory stores until 4.2.</li>
+<li><strong>The first-party client is resolved in code, not by migration 011.</strong> <code>iot-switch-ios</code> is synthesised in <code>oauth/clients.ts</code> (preregistered, verified, first party), so there is no row to drift from the code. Migration 010 adds <code>dpop_jkt</code> and <code>cnf_jkt</code> columns, the <code>first_party</code> flag on pending authorizations, and <code>par_requests</code>.</li>
+<li><strong>PAR rows are their own table</strong>, consumed with <code>DELETE … RETURNING</code>, rather than pending authorizations. A pushed request is validated in full when pushed, and validated again when used, so <code>/authorize</code> with a <code>request_uri</code> takes nothing else from the URL.</li>
+<li><strong>Callback.</strong> The custom scheme <code>com.example.iotswitch:/oauth/callback</code> is the default. <code>FIRST_PARTY_REDIRECT_URIS</code> adds the universal link on <code>API_BASE_URL</code>, and the AASA is published there once <code>APPLE_TEAM_ID</code> is set. The entitlement and a real signing team (3.6f) wait on G3. The scheme is lowercase because URL parsers lowercase schemes, and an exact redirect match would otherwise fail.</li>
+<li><strong>Token lifetime.</strong> The app&#39;s access tokens last <code>NATIVE_ACCESS_TOKEN_TTL_SECONDS</code> (600); hosts keep an hour. The app&#39;s tokens are the only ones issued for the API audience, which is how the store tells them apart.</li>
+<li><strong>Legacy mode defaults to <code>deprecated</code>, not <code>on</code>.</strong> Nothing has been released, so there is no installed base to warn first. Steps 1–2 of §10.2 still apply before <code>off</code>.</li>
+<li><strong><code>dpop_bound_access_tokens_required</code></strong> stays <code>false</code> in the MCP resource&#39;s metadata. <code>DPOP_REQUIRED_FOR_API</code> governs the REST API, which publishes no resource metadata.</li>
+<li><strong>No introspection endpoint</strong> exists, so &quot;introspection returns <code>cnf</code>&quot; (3.2) has nothing to change. <code>verifyOAuthAccessToken</code> returns <code>cnfJkt</code> to its in-process callers.</li>
+<li><strong>iOS file names differ from the table.</strong> <code>DPoP.swift</code> holds the key, the keyring and the proof builder (3.6a); <code>TokenStorage.swift</code> keeps only the refresh token and account (3.6b); <code>SessionController</code> is the coordinator for sign-in and refresh (3.6c, 3.6d); <code>WebAuthenticator.swift</code> puts the browser sheet behind a protocol. Refresh is proactive when a quarter of the token&#39;s life remains.</li>
+<li><strong>Verified in the Simulator</strong> on 18 Oct 2026: sign-up on the hosted page, callback, DPoP-bound exchange, list, add, switch, log out. The database showed one bound grant, revoked on logout. The physical-device run in the exit review remains open.</li>
 </ul>
 <hr>
 <h2 id="8-phase-4-production-infrastructure">8. Phase 4: production infrastructure</h2>
@@ -1163,9 +1177,9 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 </tr>
 <tr>
 <td><code>LEGACY_FIRST_PARTY_AUTH</code></td>
-<td><code>on</code></td>
+<td><code>deprecated</code> (as built)</td>
 <td>3.7</td>
-<td><code>deprecated</code> → <code>off</code></td>
+<td><code>off</code></td>
 <td>After one iOS release</td>
 </tr>
 <tr>
@@ -1300,13 +1314,14 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 </ul>
 <h3 id="phase-3">Phase 3</h3>
 <ul>
-<li><input disabled="" type="checkbox"> 3.1 DPoP library</li>
-<li><input disabled="" type="checkbox"> 3.2 DPoP at the AS</li>
-<li><input disabled="" type="checkbox"> 3.3 DPoP at RS and GW</li>
-<li><input disabled="" type="checkbox"> 3.4 PAR and the iOS client registration</li>
-<li><input disabled="" type="checkbox"> 3.5 Universal-link association</li>
-<li><input disabled="" type="checkbox"> 3.6a–f iOS OAuth client</li>
-<li><input disabled="" type="checkbox"> 3.7 Legacy sunset and requirement updates</li>
+<li><input checked="" disabled="" type="checkbox"> 3.1 DPoP library</li>
+<li><input checked="" disabled="" type="checkbox"> 3.2 DPoP at the AS</li>
+<li><input checked="" disabled="" type="checkbox"> 3.3 DPoP at RS and GW</li>
+<li><input checked="" disabled="" type="checkbox"> 3.4 PAR and the iOS client registration</li>
+<li><input checked="" disabled="" type="checkbox"> 3.5 Universal-link association (server side; the entitlement waits on G3)</li>
+<li><input checked="" disabled="" type="checkbox"> 3.6a–e iOS OAuth client</li>
+<li><input disabled="" type="checkbox"> 3.6f Entitlements and a signing team (G3)</li>
+<li><input checked="" disabled="" type="checkbox"> 3.7 Legacy sunset and requirement updates</li>
 </ul>
 <h3 id="phase-4">Phase 4</h3>
 <ul>
@@ -1370,6 +1385,7 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <a class="l3" href="#pr-35-universal-link-association-1-d">PR 3.5: Universal link association · 1 d</a>
 <a class="l3" href="#pr-series-36-ios-oauth-client-15-d-ios-engineer-in-parallel">PR series 3.6: iOS OAuth client · 15 d (iOS engineer, in parallel)</a>
 <a class="l3" href="#pr-37-legacy-first-party-authentication-sunset-2-d">PR 3.7: Legacy first-party authentication sunset · 2 d</a>
+<a class="l3" href="#phase-3-as-built">Phase 3 as built</a>
 <a class="l2" href="#8-phase-4-production-infrastructure">8. Phase 4: production infrastructure</a>
 <a class="l3" href="#pr-41-postgres-driver-and-a-two-database-ci-5-d">PR 4.1: Postgres driver and a two-database CI · 5 d</a>
 <a class="l3" href="#pr-42-redis-backed-stores-4-d">PR 4.2: Redis-backed stores · 4 d</a>
