@@ -22,7 +22,11 @@ import {
 import { DpopError, currentDpopNonce, verifyDpopProof } from './dpop.ts';
 import { verifyPkce } from './crypto.ts';
 import { tokenDigest } from '../tokens/hash.ts';
-import { MemorySealedResponses, type SealedResponses } from './sealed.ts';
+import type { SealedResponses } from './sealed.ts';
+import type { ReplayStore } from '../security/replay.ts';
+import type { Infrastructure } from '../stores/index.ts';
+import { metrics } from '../observability/metrics.ts';
+import { log } from '../observability/log.ts';
 import {
   consumeAuthorizationCode, establishGrant, revokeGrantNow, rotateRefresh, type IssuedTokens
 } from './store.ts';
@@ -40,11 +44,11 @@ function fail(res: Response, status: number, error: string, description: string)
  * thumbprint, null when there is no proof, or sends the error and returns
  * false.
  */
-async function proofOf(req: Request, res: Response): Promise<string | null | false> {
+async function proofOf(req: Request, res: Response, replay: ReplayStore): Promise<string | null | false> {
   const proof = req.get('dpop');
   if (proof === undefined) return null;
   try {
-    return (await verifyDpopProof(proof, { htm: 'POST', htu: `${ISSUER}/token` })).jkt;
+    return (await verifyDpopProof(proof, { htm: 'POST', htu: `${ISSUER}/token`, replay })).jkt;
   } catch (error) {
     if (!(error instanceof DpopError)) throw error;
     fail(res, 400, error.code, error.message);
@@ -52,18 +56,19 @@ async function proofOf(req: Request, res: Response): Promise<string | null | fal
   }
 }
 
-export function tokenRoutes(db: Db): Router {
+export function tokenRoutes(db: Db, infra: Infrastructure): Router {
   const router = Router();
-  // Per app, so that two servers in one process never share sealed responses.
-  const sealed = new MemorySealedResponses();
+  // Per app in memory, so two servers in one process never share sealed
+  // responses; shared through Redis when several processes serve /token.
+  const { sealed, replay } = infra;
 
   router.post('/token', async (req: Request, res: Response) => {
     // Every answer carries a fresh nonce, so a DPoP client never needs a
     // round trip just to learn one.
     res.set('DPoP-Nonce', currentDpopNonce());
     const grantType = req.body?.grant_type;
-    if (grantType === 'authorization_code') return exchangeCode(db, req, res);
-    if (grantType === 'refresh_token') return exchangeRefreshToken(db, sealed, req, res);
+    if (grantType === 'authorization_code') return exchangeCode(db, replay, req, res);
+    if (grantType === 'refresh_token') return exchangeRefreshToken(db, sealed, replay, req, res);
     return fail(res, 400, 'unsupported_grant_type',
       'Supported grant types are authorization_code and refresh_token.');
   });
@@ -71,7 +76,7 @@ export function tokenRoutes(db: Db): Router {
   return router;
 }
 
-async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> {
+async function exchangeCode(db: Db, replay: ReplayStore, req: Request, res: Response): Promise<void> {
   const { code, code_verifier, redirect_uri, client_id, resource } = req.body ?? {};
 
   // OAuth 2.1 section 3.2.2: a client that does not authenticate MUST send
@@ -81,7 +86,7 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
     return fail(res, 400, 'invalid_request', 'client_id is required.');
   }
 
-  const presentedJkt = await proofOf(req, res);
+  const presentedJkt = await proofOf(req, res, replay);
   if (presentedJkt === false) return;
   // Our own app always binds its tokens to its Secure Enclave key.
   if (client_id === FIRST_PARTY_CLIENT_ID && !presentedJkt) {
@@ -136,7 +141,7 @@ async function exchangeCode(db: Db, req: Request, res: Response): Promise<void> 
 }
 
 async function exchangeRefreshToken(
-  db: Db, sealed: SealedResponses, req: Request, res: Response
+  db: Db, sealed: SealedResponses, replay: ReplayStore, req: Request, res: Response
 ): Promise<void> {
   const { refresh_token, client_id, resource, scope } = req.body ?? {};
 
@@ -144,7 +149,7 @@ async function exchangeRefreshToken(
     return fail(res, 400, 'invalid_request', 'client_id is required.');
   }
 
-  const presentedJkt = await proofOf(req, res);
+  const presentedJkt = await proofOf(req, res, replay);
   if (presentedJkt === false) return;
 
   // Keyed by the presented token, and bound to the client, so only the same
@@ -162,16 +167,20 @@ async function exchangeRefreshToken(
 
   switch (outcome.kind) {
     case 'rotated':
+      metrics.inc('refresh_rotated');
       return respond(res, outcome.issued);
     case 'replay': {
+      metrics.inc('refresh_grace_replay');
       // The same request again, inside the window: give back exactly what the
       // first one received. If that copy is gone (a restart), refuse without
       // revoking — the caller already holds the tokens, or will sign in again.
-      const body = sealed.unseal(sealKey);
+      const body = await sealed.unseal(sealKey);
       if (!body) return fail(res, 400, 'invalid_grant', 'This refresh token was already used.');
       return sendTokens(res, body);
     }
     case 'theft':
+      metrics.inc('refresh_theft_detected');
+      log('warn', 'refresh_token_reused', { clientId: client_id, reason: 'replayed outside the grace window; grant revoked' });
       return fail(res, 400, 'invalid_grant', 'This refresh token was already used. The grant has been revoked.');
     case 'invalid_target':
       return fail(res, 400, 'invalid_target', 'resource does not match this grant.');

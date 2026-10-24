@@ -11,7 +11,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { Db } from '../db/index.ts';
 import { context } from '../http/middleware.ts';
-import { MemoryBucketStore, bucket } from '../security/rate-limit.ts';
+import { bucket } from '../security/rate-limit.ts';
 import { MCP_PATH, SERVER_INFO } from './config.ts';
 import { gate, type GateLimits } from './gate.ts';
 import { registerDeviceTools, type ToolDeps } from './tools.ts';
@@ -31,7 +31,7 @@ function buildServer(deps: ToolDeps, caller: Caller, challenge: string | undefin
 }
 
 export function mcpRoutes(deps: ToolDeps): Router {
-  const { db } = deps;
+  const { verifier } = deps;
   const router = Router();
 
   // Protected resource metadata belongs to the resource, so it is served from
@@ -48,17 +48,18 @@ export function mcpRoutes(deps: ToolDeps): Router {
   // an address-keyed limit would throttle all of them together the moment the
   // integration became popular. The gate picks between the two only after it
   // has verified the token; see gate.ts.
-  const store = new MemoryBucketStore();
+  const store = deps.infra.buckets;
   const limits: GateLimits = {
     perAddress: bucket(store, 60, 60_000),
-    perGrant: bucket(store, 600, 60_000)
+    perGrant: bucket(store, 600, 60_000),
+    replay: deps.infra.replay
   };
 
   router.post(MCP_PATH, async (req: Request, res: Response) => {
     const requestId = context(res)?.requestId ?? 'req_mcp';
 
     // Before the SDK sees anything. A refusal has to be an HTTP status.
-    const outcome = await gate(db, req, res, requestId, limits);
+    const outcome = await gate(verifier, req, res, requestId, limits);
     if (!outcome.proceed) return;
 
     // Stateless: one server and transport per request, so a connection can

@@ -45,6 +45,9 @@ import { authPageHeaders, formActionSource, newNonce } from '../security/headers
 import { clearCookie, cookieName, readCookie, setCookie } from '../security/cookies.ts';
 import { mac, macMatches } from '../security/mac.ts';
 import { mint, wellFormed } from '../tokens/format.ts';
+import { authenticationOptions, finishAuthentication } from './passkeys.ts';
+import type { Infrastructure } from '../stores/index.ts';
+import { bucket } from '../security/rate-limit.ts';
 
 /** Approving write access needs a sign-in at most this old. */
 const RECENT_SIGN_IN_SECONDS = 15 * 60;
@@ -55,15 +58,16 @@ const BINDING_COOKIE_SECONDS = 60 * 60;
  * Sends one of our own pages. Every HTML response goes through here so that
  * none can be framed or skip the CSP; see security/headers.ts.
  */
-function sendPage(
-  res: Response, status: number, render: (nonce: string) => string, formTargets: string[] = []
+export function sendPage(
+  res: Response, status: number, render: (nonce: string) => string, formTargets: string[] = [],
+  options: { script?: boolean } = {}
 ): void {
   const nonce = newNonce();
-  authPageHeaders(res, { nonce, formTargets });
+  authPageHeaders(res, { nonce, formTargets, script: options.script });
   res.status(status).type('html').send(render(nonce));
 }
 
-function sendError(res: Response, title: string, detail: string, status = 400): void {
+export function sendError(res: Response, title: string, detail: string, status = 400): void {
   sendPage(res, status, (nonce) => renderErrorPage(title, detail, nonce));
 }
 
@@ -86,7 +90,7 @@ function redirectWithError(
 }
 
 /** This browser's binding value, minting and setting one if it has none. */
-function ensureBinding(req: Request, res: Response): string {
+export function ensureBinding(req: Request, res: Response): string {
   const existing = readCookie(req, cookieName('pa'));
   if (wellFormed('binding', existing)) return existing;
   const fresh = mint('binding');
@@ -97,6 +101,11 @@ function ensureBinding(req: Request, res: Response): string {
 /** The CSRF token for every form of one pending authorization in one browser. */
 function csrfFor(pending: PendingAuthorization, binding: string): string {
   return mac('authorize-csrf', pending.id, binding);
+}
+
+/** The CSRF value for the account sign-in page, which has no authorization in flight. */
+export function accountLoginCsrf(binding: string): string {
+  return mac('account-login-csrf', binding);
 }
 
 function stepUrl(
@@ -224,7 +233,7 @@ async function validateAuthorization(
   };
 }
 
-export function authorizeRoutes(db: Db): Router {
+export function authorizeRoutes(db: Db, infra: Infrastructure): Router {
   const router = Router();
 
   /**
@@ -285,7 +294,7 @@ export function authorizeRoutes(db: Db): Router {
       csrf: csrfFor(pending, binding),
       clientHost: pending.clientHost,
       ...options
-    }), [formActionSource(pending.redirectUri)]);
+    }), [formActionSource(pending.redirectUri)], { script: options.mode === 'login' });
   }
 
   function refuseForm(res: Response): void {
@@ -468,6 +477,57 @@ export function authorizeRoutes(db: Db): Router {
 
     const consentId = await recordConsent(db, session.accountId, pending);
     await complete(res, pending, session, consentId);
+  });
+
+  /* ---------------------------------------------------- passkey sign-in */
+
+  /**
+   * "Sign in with a passkey", from the login page of an authorization in
+   * flight or from the account sign-in page. JSON in and out, called by the
+   * page's one script. The challenge is bound to this browser's binding
+   * cookie, and the CSRF value to the page that asked.
+   */
+  const passkeyAttempts = bucket(infra.buckets, Number(process.env.AUTH_RATE_LIMIT_PER_MINUTE ?? 20), 60_000);
+
+  async function passkeyContext(
+    req: Request, res: Response
+  ): Promise<{ binding: string; pending: PendingAuthorization | null } | null> {
+    const refuse = (status: number, error: string) => { res.status(status).json({ error }); return null; };
+    const allowed = await passkeyAttempts(`passkey:${req.ip ?? 'unknown'}`);
+    if (!allowed.ok) return refuse(429, 'Too many attempts. Wait a minute and try again.');
+    const binding = readCookie(req, cookieName('pa'));
+    if (!wellFormed('binding', binding)) return refuse(403, 'Reload the page and try again.');
+    const pendingId = req.body?.pending;
+    if (pendingId === undefined) {
+      return macMatches(accountLoginCsrf(binding), req.body?.csrf) ? { binding, pending: null } : refuse(403, 'Reload the page and try again.');
+    }
+    const pending = await readPendingAuthorization(db, pendingId);
+    if (!pending || !pendingBelongsTo(pending, binding) || !macMatches(csrfFor(pending, binding), req.body?.csrf)) {
+      return refuse(403, 'This sign-in has expired. Start again from the app.');
+    }
+    return { binding, pending };
+  }
+
+  router.post('/passkey/options', async (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    const context = await passkeyContext(req, res);
+    if (!context) return;
+    res.json(await authenticationOptions(db, context.binding));
+  });
+
+  router.post('/passkey/login', async (req: Request, res: Response) => {
+    res.set('Cache-Control', 'no-store');
+    const context = await passkeyContext(req, res);
+    if (!context) return;
+    const accountId = await finishAuthentication(db, context.binding, req.body?.response);
+    if (!accountId) {
+      res.status(400).json({ error: 'That passkey did not work. Try again, or use your password.' });
+      return;
+    }
+    await revokeAsSession(db, readCookie(req, cookieName('as_session')));
+    const token = await startAsSession(db, accountId, 'passkey');
+    setCookie(res, cookieName('as_session'), token, AS_SESSION_ABSOLUTE_SECONDS);
+    res.json({ redirect: context.pending ? stepUrl('consent', context.pending) : '/account' });
   });
 
   /* ------------------------------------------------------- deny, logout */

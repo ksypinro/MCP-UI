@@ -10,7 +10,7 @@
 import { randomBytes } from 'node:crypto';
 import type { Response } from 'express';
 
-/** A fresh nonce per response, for the page's one inline stylesheet. */
+/** A fresh nonce per response, for the page's inline stylesheet and, where there is one, its script. */
 export function newNonce(): string {
   return randomBytes(16).toString('base64');
 }
@@ -27,14 +27,21 @@ export function formActionSource(redirectUri: string): string {
   return url.origin === 'null' ? url.protocol : url.origin;
 }
 
+/**
+ * `script` allows the one nonce'd script a page may carry (the WebAuthn
+ * ceremony, plan 4.5) and lets it call this origin. Pages without it run no
+ * script at all.
+ */
 export function authPageHeaders(
-  res: Response, options: { nonce: string; formTargets?: string[] }
+  res: Response, options: { nonce: string; formTargets?: string[]; script?: boolean }
 ): void {
   const formAction = ["'self'", ...(options.formTargets ?? [])].join(' ');
+  const scripting = options.script ? [`script-src 'nonce-${options.nonce}'`, "connect-src 'self'"] : [];
   res.set({
     'Content-Security-Policy': [
       "default-src 'none'",
       `style-src 'nonce-${options.nonce}'`,
+      ...scripting,
       "img-src 'self'",
       `form-action ${formAction}`,
       "frame-ancestors 'none'",

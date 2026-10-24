@@ -15,7 +15,6 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { SignJWT, importJWK } from 'jose';
 import type { Queryable } from '../db/index.ts';
 import { AppError } from '../errors.ts';
 import { keys } from '../security/keys.ts';
@@ -94,6 +93,8 @@ async function resolveSubject(db: Queryable, request: ExchangeRequest): Promise<
   };
 }
 
+const b64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+
 export async function exchangeToken(db: Queryable, request: ExchangeRequest): Promise<ExchangedToken> {
   const subject = await resolveSubject(db, request);
   // Never outlive the credential it was exchanged from.
@@ -102,26 +103,29 @@ export async function exchangeToken(db: Queryable, request: ExchangeRequest): Pr
 
   const [signing] = keys().signingKeys;
   if (!signing) throw new Error('No signing key configured');
-  const key = await importJWK(signing.privateJwk as Parameters<typeof importJWK>[0], 'ES256');
   const now = Math.floor(Date.now() / 1000);
 
-  const token = await new SignJWT({
+  // Assembled by hand rather than with jose's SignJWT, because the private key
+  // may live in a KMS: all this process can do is ask for a signature.
+  const header = { alg: 'ES256', typ: 'at+jwt', kid: signing.kid };
+  const claims = {
+    iss: ISSUER,
+    aud: INTERNAL_AUDIENCE,
+    sub: subject.accountId,
+    iat: now,
+    exp: now + expiresIn,
+    jti: `tb_${randomBytes(12).toString('base64url')}`,
     client_id: subject.clientId,
     grant_id: subject.grantId,
     scope: request.scope,
     channel: subject.channel,
     auth_method: subject.authMethod,
     act: { sub: workloadUri(request.workload) },
-    cnf: { jkt: request.workload.jkt }
-  })
-    .setProtectedHeader({ alg: 'ES256', typ: 'at+jwt', kid: signing.kid })
-    .setIssuer(ISSUER)
-    .setAudience(INTERNAL_AUDIENCE)
-    .setSubject(subject.accountId)
-    .setIssuedAt(now)
-    .setExpirationTime(now + expiresIn)
-    .setJti(`tb_${randomBytes(12).toString('base64url')}`)
-    .sign(key);
+    cnf: request.workload.cnf
+  };
+  const signingInput = `${b64url(header)}.${b64url(claims)}`;
+  const signature = await signing.sign(Buffer.from(signingInput));
+  const token = `${signingInput}.${signature.toString('base64url')}`;
 
   return { token, expiresIn, grantId: subject.grantId };
 }

@@ -15,13 +15,13 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type { Db } from '../db/index.ts';
+import type { TokenVerifier } from '../security/verifier.ts';
 import { AppError, isAppError } from '../errors.ts';
-import { getAccount } from '../domain/accounts.ts';
 import type { Caller, Device, VerifiedCaller } from '../domain/types.ts';
 import type { DeviceService } from '../device-service/service.ts';
 import type { ExchangeClient } from '../exchange-client.ts';
 import type { WriteBudgets } from '../write-budgets.ts';
+import type { Infrastructure } from '../stores/index.ts';
 import { SERVER_INFO } from './config.ts';
 import { annotationsFor } from './policy.ts';
 import { DEVICES_URI, DEVICE_URI, uiToolMeta } from './ui/index.ts';
@@ -86,10 +86,11 @@ function toolError(error: unknown, challenge?: string) {
 }
 
 export interface ToolDeps {
-  db: Db;
+  verifier: TokenVerifier;
   devices: DeviceService;
   exchange: ExchangeClient;
   budgets: WriteBudgets;
+  infra: Infrastructure;
 }
 
 /**
@@ -112,7 +113,7 @@ function overBudget(retryAfter: number): AppError {
 export function registerDeviceTools(
   server: McpServer, deps: ToolDeps, caller: Caller, challenge?: string
 ): void {
-  const { db, devices, exchange, budgets } = deps;
+  const { verifier, devices, exchange, budgets } = deps;
 
   server.registerTool(
     'list_devices',
@@ -259,7 +260,7 @@ export function registerDeviceTools(
     },
     async () => {
       try {
-        const account = caller.kind === 'verified' ? await getAccount(db, caller.accountId) : null;
+        const account = caller.kind === 'verified' ? await verifier.account(caller.accountId) : null;
         return {
           content: [{
             type: 'text',

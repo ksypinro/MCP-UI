@@ -11,17 +11,19 @@
  * - issued by this authorization server, for the Device Service audience,
  *   unexpired (30 s of clock tolerance);
  * - acting through the workload presenting it (`act.sub`) and bound to it
- *   (`cnf.jkt`), so a token taken from one adapter is useless to another;
+ *   (`cnf`: a per-process value, or the thumbprint of the client certificate
+ *   on this connection), so a token taken from one adapter is useless to
+ *   another;
  * - carrying exactly the scope the operation needs.
  *
  * The account comes from `sub` and nowhere else.
  */
 
-import { createLocalJWKSet, jwtVerify, type JWTPayload } from 'jose';
+import { createLocalJWKSet, createRemoteJWKSet, jwtVerify, type JWTPayload } from 'jose';
 import { ISSUER } from '../oauth/config.ts';
 import { INTERNAL_AUDIENCE } from '../oauth/exchange.ts';
 import { publicJwks } from '../oauth/jwks.ts';
-import { workloadUri, type Workload } from '../security/workload.ts';
+import { confirms, workloadUri, type Workload } from '../security/workload.ts';
 import type { Identity } from '../domain/types.ts';
 
 /**
@@ -43,7 +45,19 @@ interface InternalClaims extends JWTPayload {
   channel?: unknown;
   auth_method?: unknown;
   act?: { sub?: unknown };
-  cnf?: { jkt?: unknown };
+  cnf?: Record<string, unknown>;
+}
+
+/**
+ * Where the authorization server's public keys come from. In one process,
+ * straight from the key material; as its own process (profile M), the
+ * authorization server's published JWKS, cached and refetched on an unknown
+ * key id, so a rotation is picked up without a restart.
+ */
+let keySource: Parameters<typeof jwtVerify>[1] | null = null;
+
+export function useJwksUrl(url: string): void {
+  keySource = createRemoteJWKSet(new URL(url), { cacheMaxAge: 10 * 60_000, cooldownDuration: 30_000 });
 }
 
 export async function verifyInternalToken(
@@ -51,7 +65,7 @@ export async function verifyInternalToken(
 ): Promise<Identity> {
   let payload: InternalClaims;
   try {
-    ({ payload } = await jwtVerify<InternalClaims>(token, createLocalJWKSet(publicJwks() as never), {
+    ({ payload } = await jwtVerify<InternalClaims>(token, (keySource ?? createLocalJWKSet(publicJwks() as never)) as never, {
       issuer: ISSUER,
       audience: INTERNAL_AUDIENCE,
       typ: 'at+jwt',
@@ -64,7 +78,7 @@ export async function verifyInternalToken(
   }
 
   if (payload.act?.sub !== workloadUri(peer)) throw new InternalTokenRefused('act does not name the caller');
-  if (payload.cnf?.jkt !== peer.jkt) throw new InternalTokenRefused('not bound to the caller');
+  if (!confirms(payload.cnf, peer.cnf)) throw new InternalTokenRefused('not bound to the caller');
   if (payload.scope !== requiredScope) throw new InternalTokenRefused(`scope ${requiredScope} required`);
   if (typeof payload.sub !== 'string' || typeof payload.client_id !== 'string'
       || typeof payload.grant_id !== 'string') {

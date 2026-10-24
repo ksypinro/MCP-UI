@@ -10,7 +10,8 @@ few things that matter here.
 ```bash
 cd server
 npm install
-npm test             # 238 tests, nothing to provision
+npm test             # 284 tests, nothing to provision
+npm run test:pg      # the same on PostgreSQL 17 and Redis 7
 npm run typecheck
 ```
 

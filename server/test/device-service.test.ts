@@ -39,7 +39,7 @@ async function internalToken(overrides: {
   const now = Math.floor(Date.now() / 1000);
   return new SignJWT({
     client_id: 'client_test', grant_id: 'grant_test', scope: overrides.scope ?? 'devices:read',
-    channel: 'mcp', auth_method: 'oauth', act: { sub: workloadUri(workload) }, cnf: { jkt: workload.jkt }
+    channel: 'mcp', auth_method: 'oauth', act: { sub: workloadUri(workload) }, cnf: workload.cnf
   })
     .setProtectedHeader({ alg: 'ES256', typ: overrides.typ ?? 'at+jwt', kid: signing!.kid })
     .setIssuer(overrides.issuer ?? ISSUER)
@@ -81,7 +81,7 @@ test('alg none and HMAC key confusion never verify', async () => {
   const claims = {
     iss: ISSUER, aud: INTERNAL_AUDIENCE, sub: accountId, iat: now, exp: now + 60, jti: 'x',
     scope: 'devices:read', client_id: 'c', grant_id: 'g', channel: 'mcp',
-    act: { sub: workloadUri(mcp) }, cnf: { jkt: mcp.jkt }
+    act: { sub: workloadUri(mcp) }, cnf: mcp.cnf
   };
 
   const none = `${b64({ alg: 'none', typ: 'at+jwt' })}.${b64(claims)}.`;

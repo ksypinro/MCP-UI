@@ -1,0 +1,36 @@
+# Prometheus alerting rules for the security metrics the server exposes on
+# METRICS_PORT (plan 4.8). The server raises the same three alerts in-process,
+# as log lines at level "alert", for deployments with nothing scraping it.
+groups:
+  - name: iot-switch-security
+    rules:
+      - alert: RefreshTokenTheft
+        # A rotated refresh token came back outside the grace window. A
+        # legitimate client never does this; the grant has been revoked.
+        expr: increase(iotsw_refresh_theft_detected_total[5m]) > 0
+        labels: { severity: page }
+        annotations:
+          summary: A refresh token was replayed and its grant revoked
+          runbook: docs/authentication-architecture/authentication-architecture.md (leak response)
+
+      - alert: DpopReplayBurst
+        # One replayed proof is a client retry bug; many are someone replaying.
+        expr: sum(increase(iotsw_dpop_rejected_total{reason="replay"}[1m])) > 10
+        labels: { severity: page }
+        annotations:
+          summary: DPoP proofs are being replayed
+
+      - alert: CimdDeniedRange
+        # Someone is trying to make this server fetch an internal address.
+        expr: increase(iotsw_cimd_fetch_total{result="denied_range"}[5m]) > 0
+        labels: { severity: ticket }
+        annotations:
+          summary: A client metadata fetch was aimed at a private address range
+
+      - alert: SecretsInLogs
+        # A token-shaped string reached a log line and was redacted. Find the
+        # code that put it there.
+        expr: increase(iotsw_log_secrets_redacted_total[1h]) > 0
+        labels: { severity: ticket }
+        annotations:
+          summary: A token-shaped value was passed to the logger

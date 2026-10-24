@@ -347,5 +347,40 @@ export const MIGRATIONS: Migration[] = [
         expires_at timestamptz NOT NULL
       );
     `
+  },
+  {
+    name: '011_passkeys_and_connected_apps',
+    sql: `
+      -- WebAuthn credentials (plan 4.5). The id is the credential id the
+      -- authenticator chose, base64url. The public key is COSE-encoded. The
+      -- signature counter is kept so a cloned authenticator that replays an
+      -- old counter is refused.
+      CREATE TABLE passkeys (
+        id           text PRIMARY KEY,
+        account_id   text NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        public_key   bytea NOT NULL,
+        counter      bigint NOT NULL DEFAULT 0,
+        transports   text NOT NULL DEFAULT '',
+        name         text NOT NULL,
+        created_at   timestamptz NOT NULL DEFAULT now(),
+        last_used_at timestamptz
+      );
+      CREATE INDEX passkeys_account_idx ON passkeys (account_id);
+
+      -- A challenge is used once: taken with DELETE ... RETURNING. A
+      -- registration challenge belongs to the signed-in account; a sign-in
+      -- challenge to the browser that asked for it.
+      CREATE TABLE webauthn_challenges (
+        challenge  text PRIMARY KEY,
+        purpose    text NOT NULL CHECK (purpose IN ('register', 'authenticate')),
+        account_id text REFERENCES accounts(id) ON DELETE CASCADE,
+        binding    text,
+        expires_at timestamptz NOT NULL
+      );
+
+      -- The connected-apps page shows when each grant was last used (plan
+      -- 4.6). Written at most once a minute per grant.
+      ALTER TABLE oauth_grants ADD COLUMN last_used_at timestamptz;
+    `
   }
 ];

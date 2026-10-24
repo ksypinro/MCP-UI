@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import type { Server } from 'node:http';
 import { createDb, type Db } from '../src/db/index.ts';
 import { createApp } from '../src/http/app.ts';
+import { isolatedPrefix, memoryInfrastructure, redisInfrastructure } from '../src/stores/index.ts';
 
 export interface Harness {
   db: Db;
@@ -17,7 +18,12 @@ export async function startServer(): Promise<Harness> {
   process.env.AUTH_RATE_LIMIT_PER_MINUTE = '100000';
   process.env.AUTHORIZE_VIEW_RATE_LIMIT_PER_MINUTE = '100000';
   const db = await createDb();
-  const server: Server = createApp(db).listen(0);
+  // With TEST_REDIS_URL the whole HTTP suite runs on the Redis stores, each
+  // server under a prefix of its own.
+  const infra = process.env.TEST_REDIS_URL
+    ? await redisInfrastructure({ url: process.env.TEST_REDIS_URL, prefix: isolatedPrefix() })
+    : memoryInfrastructure();
+  const server: Server = createApp(db, infra).listen(0);
   await new Promise((resolve) => server.once('listening', resolve));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
   return {
@@ -25,6 +31,7 @@ export async function startServer(): Promise<Harness> {
     base,
     close: async () => {
       await new Promise((resolve) => server.close(resolve));
+      await infra.close();
       await db.close();
     }
   };

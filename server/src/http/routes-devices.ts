@@ -7,18 +7,20 @@
  */
 
 import { Router, type Response } from 'express';
-import type { Db } from '../db/index.ts';
+import type { TokenVerifier } from '../security/verifier.ts';
 import { AppError } from '../errors.ts';
 import type { DeviceService } from '../device-service/service.ts';
 import type { ExchangeClient } from '../exchange-client.ts';
 import type { WriteBudgets } from '../write-budgets.ts';
+import type { Infrastructure } from '../stores/index.ts';
 import { authenticate, callerOf } from './middleware.ts';
 
 export interface DeviceRouteDeps {
-  db: Db;
+  verifier: TokenVerifier;
   devices: DeviceService;
   exchange: ExchangeClient;
   budgets: WriteBudgets;
+  infra: Infrastructure;
 }
 
 function refuseOverBudget(res: Response, retryAfter: number): never {
@@ -27,12 +29,12 @@ function refuseOverBudget(res: Response, retryAfter: number): never {
 }
 
 export function deviceRoutes(deps: DeviceRouteDeps): Router {
-  const { db, devices, exchange, budgets } = deps;
+  const { verifier, devices, exchange, budgets } = deps;
   const router = Router();
   // Scoped to the device paths. Unscoped, it ran for every request that
   // reached this router, so any unknown path anywhere answered 401 rather
   // than 404.
-  router.use('/v1/devices', authenticate(db, { required: true }));
+  router.use('/v1/devices', authenticate(verifier, { required: true, replay: deps.infra.replay }));
 
   router.get('/v1/devices', async (_req, res) => {
     const caller = callerOf(res);

@@ -28,7 +28,7 @@ graph LR
 | [`requirement.md`](./requirement.md) | The specification everything implements |
 | [`docs/`](./docs) | Architecture, code flow, sequence diagrams, testing |
 
-Roughly 17,600 lines, 298 tests.
+Roughly 21,800 lines, 344 tests.
 
 ---
 
@@ -41,11 +41,13 @@ Xcode 16+ only if you want the iOS app, which runs on iOS 18 and later.
 cd server
 npm install
 npm start            # http://localhost:4000
-npm test             # 238 tests
+npm test             # 284 tests
 ```
 
 Nothing to provision. The store is [PGlite](https://pglite.dev) — real
 PostgreSQL compiled to WebAssembly — so there is no database to install.
+`DATABASE_URL` and `REDIS_URL` switch to PostgreSQL and Redis when you want
+them; `npm run test:pg` runs the suite there.
 
 <details>
 <summary><b>Try it from the command line</b></summary>
@@ -201,7 +203,11 @@ are deprecated.
 | `ARGON2_MEMORY_KIB`, `ARGON2_TIME_COST` | `65536`, `3` | Password hashing cost |
 | `SIGNING_KEYS` | the key file | JSON array of private P-256 JWKs, current first, that sign internal tokens. Published at `/.well-known/jwks.json` |
 | `WRITE_BUDGETS` | `report` | `enforce` refuses writes over budget: 6 switches a minute per device, 20 a minute and 10 new devices an hour per grant |
-| `DATABASE_PATH` | `./.data` | Delete it to reset |
+| `DATABASE_PATH` | `./.data` | PGlite's directory. Delete it to reset |
+| `DATABASE_URL` | unset | A PostgreSQL server instead of PGlite. `DATABASE_SCHEMA`, `DATABASE_POOL_SIZE` (10) tune it |
+| `REDIS_URL` | unset | Share rate limits, DPoP replay ids, sealed refresh responses and revocations across processes. Unreachable Redis means 503s, never a free pass |
+| `KMS_PROVIDER` | unset | `local`: key material from an envelope file encrypted under a KMS key, signing keys held by the KMS. Cloud providers wait on gate G4 |
+| `METRICS_PORT` | unset | Prometheus metrics on this port, loopback only (`METRICS_HOST`) |
 | `ACCESS_TOKEN_TTL_SECONDS` | `900` | Legacy first-party sessions |
 | `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Legacy first-party sessions |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | `20` | Credential submissions per address |
@@ -219,8 +225,10 @@ are deprecated.
 
 ## Status
 
-298 tests pass. `npm run acceptance` reports **29 of 42** acceptance criteria
-proven, 10 partial, 3 open. Fourteen of the forty-two (AC-29 to AC-42) come from the
+344 tests pass (284 server, 60 iOS). On PGlite with in-memory stores,
+`npm run acceptance` reports **30 of 47** acceptance criteria proven, 14
+partial, 3 open; the four that need PostgreSQL or Redis say so and are proven
+by CI's PostgreSQL leg. Nineteen of the forty-seven (AC-29 to AC-47) come from the
 [authentication redesign](./docs/authentication-architecture/authentication-architecture.md)
 rather than the specification.
 
@@ -231,10 +239,11 @@ suite imply otherwise. They close in
 [`spike/FINDINGS.md`](./spike/FINDINGS.md).
 
 Known limits are listed in
-[Architecture §10](./docs/architecture.md#10-known-limits). The two worth
-knowing before you rely on anything: **storage is PGlite**, so concurrency is
-proven logically rather than under real row-level contention, and **there is
-no deployment** — everything has run on localhost or a tunnel.
+[Architecture §10](./docs/architecture.md#10-known-limits). The one worth
+knowing before you rely on anything: **there is no deployment.** PostgreSQL,
+Redis, a KMS interface and a four-process split with mutual TLS all exist and
+are tested, but everything has run on localhost, containers or a tunnel, and
+the cloud provider is still undecided.
 
 ---
 

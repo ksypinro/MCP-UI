@@ -55,7 +55,7 @@ test('an internal token names who, through what, for which one scope', async () 
   assert.equal(claims.grant_id, caller.grantId);
   assert.equal(claims.scope, 'devices:control', 'exactly one scope');
   assert.equal(claims.act.sub, 'spiffe://iot-switch/mcp-rs');
-  assert.equal(claims.cnf.jkt, mcp.jkt);
+  assert.deepEqual(claims.cnf, mcp.cnf);
   assert.ok(expiresIn <= 60 && claims.exp - claims.iat === expiresIn);
 });
 
@@ -99,7 +99,7 @@ test('an internal token never outlives the credential it came from', async () =>
 
 test('a revoked grant cannot be exchanged, and its cached internal tokens are dropped', async () => {
   const caller = await mcpCaller();
-  const client = new ExchangeClient(h.db, createWorkload('mcp-rs'));
+  const client = ExchangeClient.local(h.db, createWorkload('mcp-rs'));
   await client.tokenFor(caller, 'devices:read');
   assert.equal(client.size, 1);
 
@@ -110,7 +110,7 @@ test('a revoked grant cannot be exchanged, and its cached internal tokens are dr
 
 test('an internal token is reused while it has time left', async () => {
   const caller = await mcpCaller();
-  const client = new ExchangeClient(h.db, createWorkload('mcp-rs'));
+  const client = ExchangeClient.local(h.db, createWorkload('mcp-rs'));
   const first = await client.tokenFor(caller, 'devices:read');
   assert.equal(await client.tokenFor(caller, 'devices:read'), first);
   assert.notEqual(await client.tokenFor(caller, 'devices:control'), first, 'one scope never stands in for another');
@@ -121,7 +121,7 @@ test('a refused internal token is exchanged afresh once', async () => {
   // token is signed by a key the Device Service no longer trusts.
   const caller = await mcpCaller();
   const workload = createWorkload('mcp-rs');
-  const client = new ExchangeClient(h.db, workload);
+  const client = ExchangeClient.local(h.db, workload);
   const devices = createDeviceService(h.db);
   await client.tokenFor(caller, 'devices:read');
 

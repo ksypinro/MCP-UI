@@ -1,14 +1,14 @@
 import { randomBytes } from 'node:crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
-import type { Db } from '../db/index.ts';
 import { AppError, isAppError } from '../errors.ts';
-import { verifyAccessToken } from '../domain/sessions.ts';
 import type { VerifiedCaller } from '../domain/types.ts';
 import { API_RESOURCE, DPOP_ALGORITHMS, FIRST_PARTY_CLIENT_ID, SCOPES } from '../oauth/config.ts';
-import { verifyOAuthAccessToken } from '../oauth/verify.ts';
 import { DpopError, currentDpopNonce, verifyDpopProof } from '../oauth/dpop.ts';
 import { credentialFrom, requestHtu } from '../security/credentials.ts';
 import { API_BASE_URL } from '../config.ts';
+import type { ReplayStore } from '../security/replay.ts';
+import type { TokenVerifier } from '../security/verifier.ts';
+import { log } from '../observability/log.ts';
 
 export interface RequestContext {
   requestId: string;
@@ -54,7 +54,7 @@ function dpopRequired(): boolean {
  * callerOf, so that an optional-auth route cannot accidentally become a
  * protected one by forgetting a guard.
  */
-export function authenticate(db: Db, options: { required: boolean }): RequestHandler {
+export function authenticate(verifier: TokenVerifier, options: { required: boolean; replay: ReplayStore }): RequestHandler {
   return async (req, res, next) => {
     try {
       const credential = credentialFrom(req);
@@ -65,15 +65,15 @@ export function authenticate(db: Db, options: { required: boolean }): RequestHan
 
       // The app's OAuth tokens: audience the REST API, bound to its Secure
       // Enclave key. A bound token must come with a proof from that key.
-      const oauth = token ? await verifyOAuthAccessToken(db, token, [], { audience: API_RESOURCE }) : null;
+      const oauth = token ? await verifier.oauth(token, [], { audience: API_RESOURCE }) : null;
       if (oauth?.ok && token) {
         if (oauth.cnfJkt) {
           try {
             if (credential?.scheme !== 'DPoP') {
-              throw new DpopError('invalid_dpop_proof', 'This token must be presented with the DPoP scheme.');
+              throw new DpopError('invalid_dpop_proof', 'This token must be presented with the DPoP scheme.', 'scheme');
             }
             await verifyDpopProof(req.get('dpop'), {
-              htm: req.method, htu: requestHtu(API_BASE_URL, req), accessToken: token, expectedJkt: oauth.cnfJkt
+              htm: req.method, htu: requestHtu(API_BASE_URL, req), accessToken: token, expectedJkt: oauth.cnfJkt, replay: options.replay
             });
           } catch (error) {
             if (!(error instanceof DpopError)) throw error;
@@ -101,7 +101,7 @@ export function authenticate(db: Db, options: { required: boolean }): RequestHan
       }
 
       // Legacy first-party sessions, until LEGACY_FIRST_PARTY_AUTH is retired.
-      const verified = dpopRequired() ? null : await verifyAccessToken(db, token);
+      const verified = dpopRequired() ? null : await verifier.session(token);
       if (verified && token) {
         const ctx = context(res);
         // A first-party session holds every device scope; its family is its
@@ -193,7 +193,7 @@ export function errorHandler(options: { jsonRpcPaths?: string[] } = {}) {
       return;
     }
 
-    process.stderr.write(`[error] ${requestId} ${String((error as Error)?.stack ?? error)}\n`);
+    log('error', 'unhandled_error', { requestId, method: req.method, path: req.path, error: error instanceof Error ? error : String(error) });
     send(500, -32603, wantsJsonRpc ? 'Internal error' : 'Unexpected error.', 'INTERNAL_ERROR');
   };
 }

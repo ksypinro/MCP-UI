@@ -1,14 +1,16 @@
 import { Router, type Request, type Response } from 'express';
 import type { Db } from '../db/index.ts';
+import type { Infrastructure } from '../stores/index.ts';
 import { rateLimit } from '../http/middleware.ts';
 import { metadataRouter } from './metadata.ts';
 import { jwksRouter } from './jwks.ts';
 import { authorizeRoutes } from './authorize.ts';
+import { accountRoutes } from './account-routes.ts';
 import { tokenRoutes } from './token.ts';
 import { registerClient } from './clients.ts';
 import { revokeByAccessToken, revokeByRefreshToken } from './store.ts';
 
-export function oauthRoutes(db: Db): Router {
+export function oauthRoutes(db: Db, infra: Infrastructure): Router {
   const router = Router();
 
   router.use(metadataRouter);
@@ -24,19 +26,21 @@ export function oauthRoutes(db: Db): Router {
   // Read here rather than at module load so a test harness can raise it for a
   // whole suite without weakening the default that ships.
   const perMinute = Number(process.env.AUTH_RATE_LIMIT_PER_MINUTE ?? 20);
-  const credentialLimiter = rateLimit(perMinute, 60_000);
+  const credentialLimiter = rateLimit(perMinute, 60_000, (req) => `${req.ip ?? 'unknown'}:${req.path}`, infra.buckets);
   router.post('/login', credentialLimiter);
   router.post('/register', credentialLimiter);
+  router.post('/account/login', credentialLimiter);
 
   // Showing the authorization page is not a credential submission, but it is
   // reachable without an account, writes a pending authorization, and may
   // fetch a client metadata document. Bounded by address for those reasons.
   const viewsPerMinute = Number(process.env.AUTHORIZE_VIEW_RATE_LIMIT_PER_MINUTE ?? 60);
-  router.get('/authorize', rateLimit(viewsPerMinute, 60_000, (req) => `authorize-view:${req.ip ?? 'unknown'}`));
-  router.post('/par', rateLimit(viewsPerMinute, 60_000, (req) => `par:${req.ip ?? 'unknown'}`));
+  router.get('/authorize', rateLimit(viewsPerMinute, 60_000, (req) => `authorize-view:${req.ip ?? 'unknown'}`, infra.buckets));
+  router.post('/par', rateLimit(viewsPerMinute, 60_000, (req) => `par:${req.ip ?? 'unknown'}`, infra.buckets));
 
-  router.use(authorizeRoutes(db));
-  router.use(tokenRoutes(db));
+  router.use(authorizeRoutes(db, infra));
+  router.use(tokenRoutes(db, infra));
+  router.use(accountRoutes(db));
 
   /** RFC 7591 Dynamic Client Registration. Open by design, capped in clients.ts. */
   router.post('/register', async (req: Request, res: Response) => {
