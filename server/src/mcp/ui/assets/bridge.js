@@ -28,6 +28,29 @@
    */
   var hostOrigin = null;
 
+  /**
+   * With diagnostics on (UI_DIAGNOSTICS=1 on the server), a short record of
+   * what the host sent: which messages, which fields, and the display mode
+   * whenever one is mentioned. Never values that could be personal: device
+   * data and tool results are reduced to their field names.
+   */
+  var tracing = Boolean(document.body && document.body.hasAttribute && document.body.hasAttribute('data-diagnostics'));
+  var trace = [];
+  var started = Date.now();
+
+  function note(kind, method, payload) {
+    if (!tracing) return;
+    var fields = payload && typeof payload === 'object' ? Object.keys(payload) : [];
+    var context = payload && (payload.hostContext || payload);
+    var mode = context && (context.displayMode || context.mode);
+    trace.push(((Date.now() - started) / 1000).toFixed(1) + 's ' + kind + ' ' + method
+      + (fields.length ? ' {' + fields.join(',') + '}' : '')
+      + (typeof mode === 'string' ? ' mode=' + mode : ''));
+    if (trace.length > 40) trace.shift();
+    var listeners = handlers.get('diagnostics');
+    if (listeners) for (var i = 0; i < listeners.length; i++) { try { listeners[i](); } catch (e) { /* ignored */ } }
+  }
+
   function post(message) {
     window.parent.postMessage(message, hostOrigin || '*');
   }
@@ -81,6 +104,7 @@
       if (!waiter) return;
       pending.delete(message.id);
       clearTimeout(waiter.timer);
+      note('reply', waiter.method, message.error ? { error: message.error.message } : message.result);
       // A sandboxed frame without allow-same-origin reports "null", which is
       // not an origin anything can be addressed to; stay unpinned and keep
       // relying on the source check above.
@@ -102,6 +126,7 @@
       // Notifications carry an object or nothing. Anything else is malformed
       // and is dropped rather than handed to a view.
       if (message.params !== undefined && (typeof message.params !== 'object' || message.params === null)) return;
+      note('event', message.method, message.params);
       var listeners = handlers.get(message.method);
       if (listeners) {
         for (var i = 0; i < listeners.length; i++) {
@@ -159,6 +184,7 @@
     hostContext: function () { return hostContext; },
     hostOrigin: function () { return hostOrigin; },
     hostCapabilities: function () { return hostCapabilities; },
+    diagnostics: function () { return tracing ? trace.slice() : null; },
     displayMode: function () { return hostContext.displayMode || 'inline'; },
 
     /** Calls a tool through the host. The host decides whether to forward it. */

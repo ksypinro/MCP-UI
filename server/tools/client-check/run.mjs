@@ -120,7 +120,8 @@ const { resources } = await client.listResources();
 check('views are listed as resources', resources.length === 4,
   resources.map((resource) => resource.uri.replace('ui://iot/', '')).join(', '));
 
-const view = await client.readResource({ uri: 'ui://iot/devices.html' });
+const devicesView = resources.find((resource) => resource.name === 'devices');
+const view = await client.readResource({ uri: devicesView.uri });
 check('a view reads back with the MCP Apps content type',
   view.contents[0]?.mimeType === 'text/html;profile=mcp-app');
 

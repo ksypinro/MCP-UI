@@ -57,8 +57,33 @@
       ? 'No devices yet. Ask to add one.'
       : devices.length + ' device' + (devices.length === 1 ? '' : 's') + '.';
 
+    showDiagnostics();
     app.reportSize();
   }
+
+  /* With UI_DIAGNOSTICS=1 only: what this copy of the view knows. */
+  var instance = Math.random().toString(36).slice(2, 8);
+  var renders = 0;
+  function showDiagnostics() {
+    var trace = app.diagnostics();
+    if (!trace) return;
+    renders++;
+    var panel = $('diagnostics');
+    if (!panel) {
+      panel = document.createElement('pre');
+      panel.id = 'diagnostics';
+      panel.className = 'diagnostics';
+      document.body.appendChild(panel);
+    }
+    var build = (document.querySelector('meta[name="iot-build"]') || {}).content || 'unknown';
+    panel.textContent = [
+      'build ' + build + '  copy ' + instance + '  renders ' + renders,
+      'mode ' + app.displayMode() + '  host offers ' + JSON.stringify(((app.hostCapabilities() || {}).availableDisplayModes) || null),
+      'window ' + window.innerWidth + 'x' + window.innerHeight + '  content ' + document.documentElement.scrollHeight,
+      'rows ' + Math.min(devices.length, budget()) + ' of ' + devices.length
+    ].concat(trace).join('\n');
+  }
+  app.on('diagnostics', function () { if (loaded) showDiagnostics(); });
 
   function hostSupportsFullscreen() {
     var modes = (app.hostCapabilities() || {}).availableDisplayModes;

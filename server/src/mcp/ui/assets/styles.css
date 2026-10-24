@@ -150,3 +150,10 @@ input[type="text"] {
   li.row { flex-wrap: wrap; }
   .meta { flex-basis: 100%; }
 }
+
+/* UI_DIAGNOSTICS=1 only. */
+.diagnostics {
+  margin: 12px 0 0; padding: 8px; font: 11px/1.4 ui-monospace, Menlo, monospace;
+  white-space: pre-wrap; word-break: break-all; opacity: 0.75;
+  border-top: 1px dashed currentColor;
+}

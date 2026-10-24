@@ -7,6 +7,7 @@
  * needs none cannot be broken by that policy or widen it.
  */
 
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -17,10 +18,6 @@ const read = (file: string) => readFileSync(join(assets, file), 'utf8');
 /** The exact content type the MCP Apps extension defines. */
 export const UI_MIME = 'text/html;profile=mcp-app';
 
-export const AUTH_URI = 'ui://iot/auth.html';
-export const DEVICES_URI = 'ui://iot/devices.html';
-export const DEVICE_URI = 'ui://iot/device.html';
-export const ADD_DEVICE_URI = 'ui://iot/add-device.html';
 
 /**
  * No external origins, and no permissions.
@@ -42,18 +39,32 @@ export interface UiResource {
   html: string;
 }
 
+/**
+ * UI_DIAGNOSTICS=1 adds a panel to the device list that shows the build, a
+ * random id for this copy of the view, and every message the host sent it.
+ * For host verification only (spike/FINDINGS.md): it is how we learned what a
+ * host actually does, as opposed to what the specification says it does.
+ */
+const DIAGNOSTICS = process.env.UI_DIAGNOSTICS === '1';
+
+/** One hash over every asset, shown by the diagnostics panel. */
+const BUILD = createHash('sha256')
+  .update(['styles.css', 'bridge.js', 'devices.js', 'devices.body.html'].map(read).join('\n'))
+  .digest('hex').slice(0, 8);
+
 function page(title: string, bodyFile: string, scriptFile: string): string {
   return `<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+${DIAGNOSTICS ? `<meta name="iot-build" content="${BUILD}">` : ''}
 <title>${title}</title>
 <style>
 ${read('styles.css')}
 </style>
 </head>
-<body>
+<body${DIAGNOSTICS ? ' data-diagnostics' : ''}>
 ${read(bodyFile)}
 <script>
 ${read('bridge.js')}
@@ -69,45 +80,36 @@ ${read(scriptFile)}
 /**
  * Built once at startup.
  *
- * These templates are cached by hosts globally, by URL. Nothing user-specific
- * may ever be built into one: per-account data arrives only through an
- * authorized tool result.
+ * Hosts cache these templates globally, by URI, and keep serving a cached
+ * copy across reconnects: host verification found Claude web still running
+ * the old device list after its code changed. So every URI carries a hash of
+ * its page — `ui://iot/devices.3f9a1c2b.html` — and changed code is a new
+ * template that every host must fetch. Nothing user-specific may ever be
+ * built into one: per-account data arrives only through an authorized tool
+ * result.
  */
-let cached: UiResource[] | null = null;
+function view(name: string, title: string, description: string): UiResource {
+  const html = page(title, `${name}.body.html`, `${name}.js`);
+  const hash = createHash('sha256').update(html).digest('hex').slice(0, 8);
+  return { uri: `ui://iot/${name}.${hash}.html`, name, title, description, html };
+}
+
+const RESOURCES: readonly UiResource[] = Object.freeze([
+  view('auth', 'Sign in to IoT Switch', 'Signed-out entry point. Contains no credential fields.'),
+  view('devices', 'Devices', 'Your devices, each with a switch.'),
+  view('device', 'Device', 'One device, its state and a switch.'),
+  view('add-device', 'Add a device', 'Add a device by name. New devices start Off.')
+]);
+
+const uriOf = (name: string) => RESOURCES.find((resource) => resource.name === name)!.uri;
+
+export const AUTH_URI = uriOf('auth');
+export const DEVICES_URI = uriOf('devices');
+export const DEVICE_URI = uriOf('device');
+export const ADD_DEVICE_URI = uriOf('add-device');
 
 export function uiResources(): UiResource[] {
-  if (cached) return cached;
-  cached = [
-    {
-      uri: AUTH_URI,
-      name: 'auth',
-      title: 'Sign in to IoT Switch',
-      description: 'Signed-out entry point. Contains no credential fields.',
-      html: page('Sign in to IoT Switch', 'auth.body.html', 'auth.js')
-    },
-    {
-      uri: DEVICES_URI,
-      name: 'devices',
-      title: 'Devices',
-      description: 'Your devices, each with a switch.',
-      html: page('Devices', 'devices.body.html', 'devices.js')
-    },
-    {
-      uri: DEVICE_URI,
-      name: 'device',
-      title: 'Device',
-      description: 'One device, its state and a switch.',
-      html: page('Device', 'device.body.html', 'device.js')
-    },
-    {
-      uri: ADD_DEVICE_URI,
-      name: 'add-device',
-      title: 'Add a device',
-      description: 'Add a device by name. New devices start Off.',
-      html: page('Add a device', 'add-device.body.html', 'add-device.js')
-    }
-  ];
-  return cached;
+  return [...RESOURCES];
 }
 
 /** Metadata every UI resource carries. */
