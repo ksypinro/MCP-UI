@@ -1,5 +1,5 @@
 /**
- * Passkeys: WebAuthn sign-in on the authorization server. Plan 4.5, AC-45.
+ * Passkeys: WebAuthn sign-in on the authorization server. AC-45.
  *
  * A password typed into a convincing copy of this page is a password lost. A
  * passkey is bound by the browser to this site's domain (the RP ID), so a

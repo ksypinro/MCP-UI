@@ -1,7 +1,6 @@
 /**
  * The iOS app as an OAuth client: pushed authorization, sign-in in the
  * system browser, no consent screen, DPoP-bound tokens for the REST API.
- * Plan 3.2 to 3.5 and 3.7.
  */
 
 import test, { after, afterEach, before } from 'node:test';
@@ -18,9 +17,7 @@ let h: Harness;
 before(async () => { h = await startServer(); });
 after(async () => { await h.close(); });
 afterEach(() => {
-  delete process.env.LEGACY_FIRST_PARTY_AUTH;
   delete process.env.APPLE_TEAM_ID;
-  delete process.env.DPOP_REQUIRED_FOR_API;
 });
 
 const CALLBACK = 'com.example.iotswitch:/oauth/callback';
@@ -88,7 +85,7 @@ test('the app signs in through PAR and gets DPoP-bound tokens for the API', asyn
 
   const devices = await api('/v1/devices', body.access_token!, key);
   assert.equal(devices.status, 200);
-  const me = await api('/v1/auth/me', body.access_token!, key);
+  const me = await api('/v1/me', body.access_token!, key);
   assert.equal(me.status, 200);
 });
 
@@ -190,34 +187,6 @@ test('a pushed request is used once, and the browser cannot change it', async ()
 
   const second = await new Browser(h.base).get(url);
   assert.equal(second.status, 400, 'a request_uri works once');
-});
-
-test('the API can be told to accept only DPoP-bound tokens', async () => {
-  const { createAccount } = await import('../src/domain/accounts.ts');
-  const { startSession } = await import('../src/domain/sessions.ts');
-  const account = await createAccount(h.db, `legacy${Date.now()}`, PASSWORD);
-  const session = await startSession(h.db, account.id);
-  const legacy = () => fetch(`${h.base}/v1/devices`, { headers: { authorization: `Bearer ${session.accessToken}` } });
-
-  assert.equal((await legacy()).status, 200);
-  process.env.DPOP_REQUIRED_FOR_API = 'on';
-  assert.equal((await legacy()).status, 401);
-});
-
-test('legacy sign-in is marked deprecated, and can be retired', async () => {
-  const login = () => fetch(`${h.base}/v1/auth/login`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: 'nobody', password: 'wrong password entirely' })
-  });
-
-  const deprecated = await login();
-  assert.equal(deprecated.headers.get('deprecation'), '@1792281600');
-  assert.ok(deprecated.headers.get('sunset'));
-
-  process.env.LEGACY_FIRST_PARTY_AUTH = 'off';
-  const retired = await login();
-  assert.equal(retired.status, 410);
-  assert.equal(((await retired.json()) as { error: { code: string } }).error.code, 'ENDPOINT_RETIRED');
 });
 
 test('the universal-link association is published only with an Apple team', async () => {

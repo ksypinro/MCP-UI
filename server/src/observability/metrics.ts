@@ -1,5 +1,5 @@
 /**
- * Security metrics, in the Prometheus text format. Plan 4.8.
+ * Security metrics, in the Prometheus text format.
  *
  * Counters only, labelled, per process: a scraper sums across processes.
  * Exposed by the entry point on a separate, internal listener (METRICS_PORT),

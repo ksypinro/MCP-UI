@@ -60,8 +60,8 @@ test('an absurdly long client_id is rejected before any lookup', async () => {
 test('a redirect URI that would execute script is never registerable', async () => {
   const { isRegisterableRedirectUri } = await import('../src/oauth/clients.ts');
 
-  // An earlier form of this check ended in `protocol !== 'http:'`, which
-  // accepted everything that was not plain HTTP. A registered javascript:
+  // A check ending in `protocol !== 'http:'` would accept everything that is
+  // not plain HTTP. A registered javascript:
   // redirect is a stored XSS payload that this server sends a live
   // authorization code to.
   assert.equal(isRegisterableRedirectUri('javascript:alert(1)'), false);
@@ -97,7 +97,7 @@ test('pinned DNS supports Node connections with and without family autoselection
   } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
-/* ------------------------------------------------------- phase 1 hardening */
+/* ------------------------------------------------- SSRF and CIMD hardening */
 
 import { isForbiddenAddress, type CimdFetcher } from '../src/oauth/clients.ts';
 

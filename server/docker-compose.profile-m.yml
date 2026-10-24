@@ -1,6 +1,6 @@
 # Profile M for local testing: one process per component, mutual TLS between
-# them, a local CA, PostgreSQL and Redis. Plan 4.7. Not a deployment: real
-# certificates come from a service mesh, real keys from a KMS (gate G4).
+# them, a local CA, PostgreSQL and Redis. Not a deployment: real certificates
+# come from a service mesh, real keys from a cloud KMS.
 #
 #   npm install
 #   docker compose -f docker-compose.profile-m.yml up

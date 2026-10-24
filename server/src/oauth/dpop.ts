@@ -1,6 +1,6 @@
 /**
  * DPoP (RFC 9449): proof that whoever presents a token holds the private key
- * it was bound to. Plan 3.1, architecture sections 5.6 and 8.1.
+ * it was bound to. Architecture sections 5.6 and 8.1.
  *
  * A bearer token works for anyone who has it. A DPoP-bound token works only
  * alongside a fresh proof signed by one key: the token carries the key's

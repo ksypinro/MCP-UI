@@ -3,7 +3,7 @@ import XCTest
 @testable import IoTSwitch
 
 /// Spec sections 7.2 and 10.4, with sign-in in the system browser (OAuth 2.1:
-/// PAR, PKCE, DPoP) instead of a native password form.
+/// PAR, PKCE, DPoP), never a native password form.
 @MainActor
 final class SessionControllerTests: XCTestCase {
 

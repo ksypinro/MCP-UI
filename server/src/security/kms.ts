@@ -1,5 +1,5 @@
 /**
- * Key material held by a key management service. Plan 4.3.
+ * Key material held by a key management service.
  *
  * Two kinds of secret, treated differently because of how they are used:
  *
@@ -15,8 +15,7 @@
  * Start-up fails closed: if any key cannot be decrypted or any signing key
  * cannot be read, the server does not start.
  *
- * Which cloud's KMS is a decision not yet made (gate G4). `Kms` is the whole
- * surface a provider adapter has to implement. `LocalKms` implements it in
+ * `Kms` is the whole surface a provider adapter has to implement. `LocalKms` implements it in
  * software, for development and tests, with the same rule that private keys
  * are never handed out.
  */
@@ -109,12 +108,12 @@ export class LocalKms implements Kms {
   }
 }
 
-/** The KMS named by KMS_PROVIDER. Only `local` exists until gate G4 picks a cloud. */
+/** The KMS named by KMS_PROVIDER. `local` is the provider built in. */
 export function kmsFromEnvironment(defaultLocalPath: string): Kms | null {
   const provider = process.env.KMS_PROVIDER;
   if (!provider) return null;
   if (provider === 'local') return new LocalKms(process.env.LOCAL_KMS_FILE ?? defaultLocalPath);
-  throw new Error(`KMS_PROVIDER=${provider} has no adapter yet. The cloud provider is gate G4; only "local" exists.`);
+  throw new Error(`KMS_PROVIDER=${provider} is not a known provider; "local" is the one built in.`);
 }
 
 /** What is written to disk: every secret wrapped, every signing key a KMS id. */

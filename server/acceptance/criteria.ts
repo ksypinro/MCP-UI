@@ -34,7 +34,7 @@ export const CRITERIA: Criterion[] = [
     id: 'AC-01', scenario: 'New registration',
     evidence: [
       'sign-up creates one account and rejects a duplicate under folding',
-      'sign-up returns an account and a session'
+      'the app signs in through PAR and gets DPoP-bound tokens for the API'
     ],
     ios: ['SessionControllerTests.testSigningInPushesTheRequestAndKeepsOnlyTheRefreshToken']
   },
@@ -42,17 +42,15 @@ export const CRITERIA: Criterion[] = [
     id: 'AC-02', scenario: 'Invalid or duplicate registration',
     evidence: [
       'usernames and passwords are validated at the boundary',
-      'a duplicate username is a 409 naming the field',
-      'a weak password is a 422 naming the field'
+      'a taken username or a weak password re-renders sign-up and creates nothing'
     ]
-    // Since phase 3 these errors are shown on the hosted page, not in the app.
   },
   {
     id: 'AC-03', scenario: 'Login and logout',
     evidence: [
-      'login succeeds, and failure is generic',
+      'an unknown username fails exactly like a wrong password',
       'credential verification is case-insensitive on the username only',
-      'logout invalidates access tokens that were already issued'
+      'revoking the grant at the authorization server stops its token at once'
     ],
     ios: ['SessionControllerTests.testLogOutClearsLocalStateEvenIfRevocationFails']
   },
@@ -137,7 +135,7 @@ export const CRITERIA: Criterion[] = [
     ],
     gap: 'Observed 24 Oct on Claude and ChatGPT, web and Android: each host\'s own '
       + 'Connect reaches the hosted page; neither rendered show_auth before connecting. '
-      + 'Claude on iPhone not yet observed. FINDINGS Q1.'
+      + 'Claude on iPhone not yet observed. host-compatibility Q1.'
   },
   {
     id: 'AC-14', scenario: 'External authorization',
@@ -146,15 +144,15 @@ export const CRITERIA: Criterion[] = [
       'authorization server metadata advertises what hosts gate on'
     ],
     gap: 'Completed 24 Oct by Claude and ChatGPT (Plus), both by CIMD, tokens for '
-      + 'the right resource; app versions not recorded, iPhone not yet. FINDINGS Q6.'
+      + 'the right resource; app versions not recorded, iPhone not yet. host-compatibility Q6.'
   },
   {
     id: 'AC-15', scenario: 'Credential isolation',
     evidence: [
       'a password is stored hashed and never trimmed',
-      'tokens are stored hashed, not in the clear',
+      'tokens are stored only as keyed hashes',
       'no view can hold a token, and none renders user data as markup',
-      'sign-up returns an account and a session, and echoes no secrets',
+      '/v1/me identifies the caller without leaking secrets',
       'logging a request with an Authorization header writes no token'
     ]
   },
@@ -173,8 +171,8 @@ export const CRITERIA: Criterion[] = [
       'every view declares the exact MCP Apps content type',
       'a version conflict explains itself with what the device actually is'
     ],
-    gap: 'Rendered and usable on Claude and ChatGPT, web and Android (24 Oct), after '
-      + 'two view fixes found there. Claude on iPhone not yet observed. FINDINGS Q3, Q5.'
+    gap: 'Rendered and usable on Claude and ChatGPT, web and Android (24 Oct). '
+      + 'Claude on iPhone not yet observed. host-compatibility Q3, Q5.'
   },
   {
     id: 'AC-18', scenario: 'Text fallback',
@@ -185,7 +183,7 @@ export const CRITERIA: Criterion[] = [
     evidence: [],
     ios: ['the whole IoTSwitchTests suite'],
     gap: 'Core flows on a real iPhone, and Claude on iOS rendering the views. '
-      + 'The simulator run in phase 2 is not a device.'
+      + 'A simulator run is not a device.'
   },
   {
     id: 'AC-20', scenario: 'iPad layout',
@@ -245,17 +243,16 @@ export const CRITERIA: Criterion[] = [
     evidence: [],
     gap: 'Observed 24 Oct: neither host confirmed switch flips inside the card; '
       + 'ChatGPT asked once before first use. Re-prompting in a new conversation '
-      + 'not yet observed. FINDINGS Q4.'
+      + 'not yet observed. host-compatibility Q4.'
   },
   {
     id: 'AC-28', scenario: 'Inline presentation',
     evidence: ['the device list bounds what it renders inline and can ask for more'],
     gap: 'Four rows left room to spare on Claude web (24 Oct). No phone '
-      + 'measurement yet, so the budget is still published guidance. FINDINGS Q2.'
+      + 'measurement yet, so the budget is still published guidance. host-compatibility Q2.'
   },
 
-  // Beyond section 12: criteria added by Authentication Architecture v2
-  // (docs/authentication-architecture/implementation-plan.md, section 9.3).
+  // Authentication and infrastructure (spec section 12, AC-29 to AC-47).
   {
     id: 'AC-29', scenario: 'Authorization pages cannot be framed',
     evidence: [
@@ -330,13 +327,11 @@ export const CRITERIA: Criterion[] = [
   {
     id: 'AC-36', scenario: 'Write budgets bound automated writes per grant and device',
     evidence: [
-      'switching one device more than six times a minute is refused when enforced',
-      'more than twenty changes a minute across devices is refused when enforced',
+      'switching one device more than six times a minute is refused',
+      'more than twenty changes a minute across devices is refused',
       'budgets are per grant: another client of the same person keeps its own',
       'the REST API refuses an over-budget change with 429 and Retry-After'
-    ],
-    gap: 'Report-only by default (WRITE_BUDGETS=report) until a week of real use '
-      + 'shows the limits do not bite people. Enforcement is a configuration change.'
+    ]
   },
   {
     id: 'AC-37', scenario: 'Every change names the user, client, grant and adapter behind it',
@@ -371,8 +366,9 @@ export const CRITERIA: Criterion[] = [
       'SessionControllerTests.testAResponseFromAnotherIssuerIsRefused',
       'SessionControllerTests.testAResponseToAnotherRequestIsRefused'
     ],
-    gap: 'The callback is the custom scheme until an Apple team is chosen (G3); '
-      + 'then the universal link replaces it.'
+    gap: 'The callback is the custom scheme. The universal link needs an Apple '
+      + 'Developer team: APPLE_TEAM_ID on the server and the associated-domains '
+      + 'entitlement in a signed build.'
   },
   {
     id: 'AC-40', scenario: 'The app keeps its session through flaky networks, and only with its key',
@@ -392,14 +388,11 @@ export const CRITERIA: Criterion[] = [
     ]
   },
   {
-    id: 'AC-42', scenario: 'The legacy password endpoints can be retired',
+    id: 'AC-42', scenario: 'The REST API accepts only DPoP-bound app tokens',
     evidence: [
-      'legacy sign-in is marked deprecated, and can be retired',
-      'the API can be told to accept only DPoP-bound tokens'
-    ],
-    gap: 'Deprecated, not yet off: the legacy endpoints answer with Deprecation '
-      + 'and Sunset headers until the browser sign-in build has shipped. Then '
-      + 'LEGACY_FIRST_PARTY_AUTH=off and DPOP_REQUIRED_FOR_API=on.'
+      'protected endpoints refuse an absent, bogus or unbound token',
+      'a bound token is useless without its key'
+    ]
   },
   {
     id: 'AC-43', scenario: 'Concurrency guarantees hold on real Postgres under contention',
@@ -431,7 +424,7 @@ export const CRITERIA: Criterion[] = [
       'an authenticator whose counter stops advancing is refused'
     ],
     gap: 'Run with a software authenticator that signs real WebAuthn responses. '
-      + 'A platform passkey in Safari and Chrome, on a device, is the exit review.'
+      + 'A platform passkey in Safari and Chrome, on a device, is still to be run.'
   },
   {
     id: 'AC-46', scenario: 'Users can see and revoke every connected app',
@@ -452,8 +445,8 @@ export const CRITERIA: Criterion[] = [
       'an unreachable database is a fast 503, not a hang',
       'a connection the server terminates is a 503, and the pool recovers'
     ],
-    // The drill itself (Redis and PostgreSQL stopped under load, profile S and
-    // M) is recorded in the implementation plan's phase 4 exit review.
+    // The failover run (Redis and PostgreSQL stopped under load, profile S and
+    // M) is recorded in docs/testing.md.
     requires: ['postgres', 'redis']
   }
 ];

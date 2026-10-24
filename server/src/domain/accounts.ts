@@ -14,7 +14,7 @@ interface AccountRow {
   id: string;
   username: string;
   password_hash: string;
-  password_pepper_version: number | null;
+  password_pepper_version: number;
   created_at: Date;
 }
 
@@ -122,21 +122,11 @@ export async function verifyCredentials(
     // unparseable, in which case verify throws, returns immediately, and the
     // defence is silently absent precisely when it is needed.
     const decoy = await decoyHash();
-    await verifyPassword(decoy.encoded, rawPassword, decoy.pepperVersion);
+    await verifyPassword(decoy.encoded, rawPassword);
     return null;
   }
 
-  if (!(await verifyPassword(row.password_hash, rawPassword, row.password_pepper_version))) return null;
-
-  // A hash from before peppering, or under weaker parameters, is upgraded
-  // the one time the password itself is in hand.
-  if (row.password_pepper_version === null) {
-    const upgraded = await hashPassword(rawPassword);
-    await db.query(
-      'UPDATE accounts SET password_hash = $1, password_pepper_version = $2 WHERE id = $3',
-      [upgraded.encoded, upgraded.pepperVersion, row.id]
-    );
-  }
+  if (!(await verifyPassword(row.password_hash, rawPassword))) return null;
   return toAccount(row);
 }
 

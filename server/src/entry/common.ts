@@ -1,6 +1,6 @@
 /**
  * Start-up shared by every entry point: key material, metrics, alerts, and
- * an orderly shutdown. Plan 4.3, 4.7, 4.8.
+ * an orderly shutdown.
  */
 
 import { createServer, type Server } from 'node:http';

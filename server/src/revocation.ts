@@ -1,6 +1,5 @@
 /**
  * Revocation events, so caches built on a grant drop it the moment it ends.
- * Plan 2.5 and 4.4.
  *
  * Every protected request still verifies its credential live, so a revoked
  * grant is refused at the edge regardless; this makes sure no internal token

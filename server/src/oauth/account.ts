@@ -1,12 +1,11 @@
 /**
- * What a signed-in person can see and undo about their own account. Plan 4.6,
- * AC-46.
+ * What a signed-in person can see and undo about their own account. AC-46.
  *
  * Every application that holds a grant is listed with what it can do and when
  * it last did anything, and each can be cut off on its own. "Sign out
- * everywhere" ends every grant, every first-party session and every browser
- * session at once; so does changing the password, because a password change
- * usually means someone else may have had it.
+ * everywhere" ends every grant and every browser session at once; so does
+ * changing the password, because a password change usually means someone
+ * else may have had it.
  */
 
 import type { Db, Queryable } from '../db/index.ts';
@@ -89,8 +88,8 @@ export async function revokeConnectedApp(db: Db, accountId: string, grantId: str
 }
 
 /**
- * Ends every grant (hosts and the iOS app alike), every legacy first-party
- * session and every authorization-server browser session for this account,
+ * Ends every grant (hosts and the iOS app alike) and every
+ * authorization-server browser session for this account,
  * in one transaction, then tells every process to drop what it cached.
  */
 export async function signOutEverywhere(db: Db, accountId: string): Promise<void> {
@@ -99,7 +98,6 @@ export async function signOutEverywhere(db: Db, accountId: string): Promise<void
       'SELECT id FROM oauth_grants WHERE account_id = $1 AND revoked_at IS NULL FOR UPDATE', [accountId]
     );
     for (const { id } of rows) await revokeGrant(tx, id);
-    await tx.query('UPDATE sessions SET revoked_at = now() WHERE account_id = $1 AND revoked_at IS NULL', [accountId]);
     await revokeAllAsSessions(tx, accountId);
   });
   accountRevoked(accountId);

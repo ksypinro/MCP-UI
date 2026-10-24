@@ -11,7 +11,7 @@ import { keys } from './security/keys.ts';
  * and Argon2 parameters are embedded in the encoded hash, so the cost can be
  * raised later without a migration; the pepper version is stored beside it.
  *
- * Parameters follow the plan (m = 64 MiB, t = 3, p = 1). ARGON2_MEMORY_KIB and
+ * Parameters: m = 64 MiB, t = 3, p = 1. ARGON2_MEMORY_KIB and
  * ARGON2_TIME_COST exist so a test harness can lower them for speed; they are
  * read on every call so it can do so after import.
  *
@@ -46,15 +46,9 @@ export async function hashPassword(password: string): Promise<PasswordHash> {
   };
 }
 
-/**
- * `pepperVersion` null means a hash written before peppering. It is checked
- * against the raw password, and the caller should rehash it on success.
- */
-export async function verifyPassword(
-  encodedHash: string, password: string, pepperVersion: number | null
-): Promise<boolean> {
+export async function verifyPassword(encodedHash: string, password: string): Promise<boolean> {
   try {
-    return await verify(encodedHash, pepperVersion === null ? password : peppered(password));
+    return await verify(encodedHash, peppered(password));
   } catch {
     // A malformed stored hash must read as "wrong password", never as a crash
     // that distinguishes this account from one that does not exist.

@@ -2,7 +2,7 @@ import express, { Router } from 'express';
 import type { Express, RequestHandler } from 'express';
 import type { Db } from '../db/index.ts';
 import { errorHandler, notFound, withRequestId } from './middleware.ts';
-import { authRoutes, gatewayAuthRoutes } from './routes-auth.ts';
+import { accountRoutes } from './routes-account.ts';
 import { appLinkRoutes } from './app-links.ts';
 import { deviceRoutes } from './routes-devices.ts';
 import { oauthRoutes } from '../oauth/routes.ts';
@@ -20,7 +20,7 @@ import { useCimdFetchStore } from '../oauth/clients.ts';
 /**
  * Mounts `router` only for requests addressed to `baseUrl`'s host.
  *
- * With one origin (local development) every router is mounted as before. With
+ * With one origin (local development) every router is mounted everywhere. With
  * three, the authorization server answers only on its own host, the MCP
  * endpoint only on its own, and so on, so a cookie or page of one can never be
  * reached through another. The Host header is compared as sent; a proxy in
@@ -35,11 +35,6 @@ function onHost(baseUrl: string, router: RequestHandler): RequestHandler {
   };
 }
 
-/**
- * `infra` holds the counters, proof ids, sealed responses and revocation hub
- * the app shares with other processes. Without it, the app gets its own
- * in-memory set, which is right for one process and for tests.
- */
 /** Express with the parts every component shares: request ids, body parsing, health. */
 export function baseApp(): Express {
   const app = express();
@@ -83,11 +78,11 @@ export function authServerRouter(db: Db, infra: Infrastructure): RequestHandler 
   return oauthRoutes(db, infra);
 }
 
-/** The REST API gateway. With `db` it also serves the legacy password endpoints. */
-export function apiRouter(deps: EdgeDeps, db: Db | null): Router {
+/** The REST API gateway. */
+export function apiRouter(deps: EdgeDeps): Router {
   const router = Router();
   router.use(appLinkRoutes());
-  router.use(db ? authRoutes(db, deps.infra, deps.verifier) : gatewayAuthRoutes(deps.infra, deps.verifier));
+  router.use(accountRoutes(deps.infra, deps.verifier));
   router.use(deviceRoutes(deps));
   return router;
 }
@@ -122,7 +117,7 @@ export function createApp(db: Db, infra: Infrastructure = memoryInfrastructure()
   // body, because a refusal there has to be an HTTP status rather than a tool
   // result.
   app.use(onHost(MCP_BASE_URL, mcpRoutes({ verifier, devices, exchange: mcpExchange, budgets, infra })));
-  app.use(onHost(API_BASE_URL, apiRouter({ verifier, devices, exchange: apiExchange, budgets, infra }, db)));
+  app.use(onHost(API_BASE_URL, apiRouter({ verifier, devices, exchange: apiExchange, budgets, infra })));
 
   return finishApp(app);
 }

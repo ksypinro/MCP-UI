@@ -1,6 +1,6 @@
 /**
- * Token exchange (RFC 8693) and the internal tokens it mints. Plan 2.3 and
- * 2.5, architecture section 7.6.
+ * Token exchange (RFC 8693) and the internal tokens it mints. Architecture
+ * section 7.6.
  */
 
 import test, { after, before } from 'node:test';
@@ -10,7 +10,6 @@ import { exchangeToken, INTERNAL_AUDIENCE } from '../src/oauth/exchange.ts';
 import { ISSUER } from '../src/oauth/config.ts';
 import { publicJwks } from '../src/oauth/jwks.ts';
 import { verifyOAuthAccessToken } from '../src/oauth/verify.ts';
-import { startSession } from '../src/domain/sessions.ts';
 import { createAccount } from '../src/domain/accounts.ts';
 import { createWorkload } from '../src/security/workload.ts';
 import { ExchangeClient } from '../src/exchange-client.ts';
@@ -20,6 +19,7 @@ import { createDeviceService } from '../src/device-service/service.ts';
 import type { VerifiedCaller } from '../src/domain/types.ts';
 import { startServer, type Harness } from './oauth-helpers.ts';
 import { tokenFor } from './mcp-helpers.ts';
+import { appClientFor } from './app-helpers.ts';
 
 let h: Harness;
 before(async () => { h = await startServer(); });
@@ -77,14 +77,16 @@ test('each adapter may present only its own kind of credential', async () => {
   );
 
   const account = await createAccount(h.db, `fp${Date.now()}`, 'correct horse battery staple');
-  const session = await startSession(h.db, account.id);
+  const app = await appClientFor(h.db, h.base, account.id);
   await assert.rejects(
-    exchangeToken(h.db, { workload: mcp, subjectToken: session.accessToken, scope: 'devices:read' }),
+    exchangeToken(h.db, { workload: mcp, subjectToken: app.accessToken, scope: 'devices:read' }),
     (error: any) => error.code === 'UNAUTHENTICATED',
-    'a first-party token presented by the MCP adapter'
+    "the app's token presented by the MCP adapter"
   );
-  const internal = await exchangeToken(h.db, { workload: gateway, subjectToken: session.accessToken, scope: 'devices:read' });
-  assert.equal((decodeJwt(internal.token) as any).client_id, 'iot-switch-ios');
+  const internal = await exchangeToken(h.db, { workload: gateway, subjectToken: app.accessToken, scope: 'devices:read' });
+  const claims = decodeJwt(internal.token) as any;
+  assert.equal(claims.client_id, 'iot-switch-ios');
+  assert.equal(claims.auth_method, 'oauth-dpop');
 });
 
 test('an internal token never outlives the credential it came from', async () => {

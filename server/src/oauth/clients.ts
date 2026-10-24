@@ -57,8 +57,7 @@ const CIMD_MAX_BYTES = 5 * 1024;
 /**
  * CIMD client_ids we recognise by URL, shown as verified on the consent
  * screen. Comma-separated KNOWN_CLIENTS overrides the default. Both are the
- * client_ids the hosts actually presented in host verification on
- * 24 Oct 2026 (spike/FINDINGS.md, Q6).
+ * client_ids Claude and ChatGPT present (docs/host-compatibility.md).
  */
 export const DEFAULT_KNOWN_CLIENTS = [
   'https://claude.ai/oauth/mcp-oauth-client-metadata',
@@ -82,8 +81,8 @@ export function knownClients(): Set<string> {
  * else — private, loopback, link-local, carrier-grade NAT, benchmarking and
  * documentation ranges, multicast, unique-local IPv6, and the IPv6 forms that
  * embed an IPv4 address (mapped, NAT64, 6to4, Teredo) — so there is no
- * hand-written parsing left to get wrong. An earlier version checked only the
- * fe80 prefix of link-local and missed NAT64 entirely.
+ * hand-written parsing left to get wrong: a prefix check on fe80 alone, for
+ * instance, misses the rest of link-local and all of NAT64.
  */
 export function isForbiddenAddress(address: string): boolean {
   if (!ipaddr.isValid(address)) return true;

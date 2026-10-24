@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { AppError, isAppError } from '../errors.ts';
 import type { VerifiedCaller } from '../domain/types.ts';
-import { API_RESOURCE, DPOP_ALGORITHMS, FIRST_PARTY_CLIENT_ID, SCOPES } from '../oauth/config.ts';
+import { API_RESOURCE, DPOP_ALGORITHMS } from '../oauth/config.ts';
 import { DpopError, currentDpopNonce, verifyDpopProof } from '../oauth/dpop.ts';
 import { credentialFrom, requestHtu } from '../security/credentials.ts';
 import { API_BASE_URL } from '../config.ts';
@@ -13,7 +13,6 @@ import { log } from '../observability/log.ts';
 export interface RequestContext {
   requestId: string;
   caller?: VerifiedCaller;
-  sessionId?: string;
 }
 
 /** Typed accessor for the per-request context stashed on res.locals. */
@@ -38,21 +37,15 @@ export function withRequestId(): RequestHandler {
 }
 
 /**
- * With DPOP_REQUIRED_FOR_API=on the API accepts only DPoP-bound tokens: no
- * legacy first-party sessions, no bearer tokens. Off until the iOS build
- * that binds its tokens is the minimum supported version.
- */
-function dpopRequired(): boolean {
-  return process.env.DPOP_REQUIRED_FOR_API === 'on';
-}
-
-/**
- * Resolves a bearer token on every request that carries one.
+ * Resolves the access token on every request that carries one. The API
+ * accepts only the app's OAuth tokens: audience the REST API, bound to its
+ * Secure Enclave key (RFC 9449), each request carrying a proof from that key.
+ * A bearer token, or one minted for another resource, is refused.
  *
- * `required: false` is used on endpoints that behave differently when signed
- * in but do not demand it. It never *rejects* — the route decides, via
- * callerOf, so that an optional-auth route cannot accidentally become a
- * protected one by forgetting a guard.
+ * `required: false` is for endpoints that behave differently when signed in
+ * but do not demand it. It never rejects a request for carrying no token —
+ * the route decides, via callerOf — but a token that is presented must be
+ * valid and bound, whatever the route.
  */
 export function authenticate(verifier: TokenVerifier, options: { required: boolean; replay: ReplayStore }): RequestHandler {
   return async (req, res, next) => {
@@ -63,27 +56,22 @@ export function authenticate(verifier: TokenVerifier, options: { required: boole
       // a round trip to learn one.
       if (credential?.scheme === 'DPoP') res.set('DPoP-Nonce', currentDpopNonce());
 
-      // The app's OAuth tokens: audience the REST API, bound to its Secure
-      // Enclave key. A bound token must come with a proof from that key.
       const oauth = token ? await verifier.oauth(token, [], { audience: API_RESOURCE }) : null;
       if (oauth?.ok && token) {
-        if (oauth.cnfJkt) {
-          try {
-            if (credential?.scheme !== 'DPoP') {
-              throw new DpopError('invalid_dpop_proof', 'This token must be presented with the DPoP scheme.', 'scheme');
-            }
-            await verifyDpopProof(req.get('dpop'), {
-              htm: req.method, htu: requestHtu(API_BASE_URL, req), accessToken: token, expectedJkt: oauth.cnfJkt, replay: options.replay
-            });
-          } catch (error) {
-            if (!(error instanceof DpopError)) throw error;
-            res.set('WWW-Authenticate',
-              `DPoP error="${error.code}", error_description="${error.message}", algs="${DPOP_ALGORITHMS.join(' ')}"`);
-            res.set('DPoP-Nonce', currentDpopNonce());
-            throw new AppError('UNAUTHENTICATED', error.message);
+        if (!oauth.cnfJkt) throw new AppError('UNAUTHENTICATED', 'This API requires DPoP-bound tokens.');
+        try {
+          if (credential?.scheme !== 'DPoP') {
+            throw new DpopError('invalid_dpop_proof', 'This token must be presented with the DPoP scheme.', 'scheme');
           }
-        } else if (dpopRequired()) {
-          throw new AppError('UNAUTHENTICATED', 'This API requires DPoP-bound tokens.');
+          await verifyDpopProof(req.get('dpop'), {
+            htm: req.method, htu: requestHtu(API_BASE_URL, req), accessToken: token, expectedJkt: oauth.cnfJkt, replay: options.replay
+          });
+        } catch (error) {
+          if (!(error instanceof DpopError)) throw error;
+          res.set('WWW-Authenticate',
+            `DPoP error="${error.code}", error_description="${error.message}", algs="${DPOP_ALGORITHMS.join(' ')}"`);
+          res.set('DPoP-Nonce', currentDpopNonce());
+          throw new AppError('UNAUTHENTICATED', error.message);
         }
         const ctx = context(res);
         ctx.caller = {
@@ -100,35 +88,13 @@ export function authenticate(verifier: TokenVerifier, options: { required: boole
         return;
       }
 
-      // Legacy first-party sessions, until LEGACY_FIRST_PARTY_AUTH is retired.
-      const verified = dpopRequired() ? null : await verifier.session(token);
-      if (verified && token) {
-        const ctx = context(res);
-        // A first-party session holds every device scope; its family is its
-        // grant, stable across rotation.
-        ctx.caller = {
-          kind: 'verified',
-          accountId: verified.accountId,
-          clientId: FIRST_PARTY_CLIENT_ID,
-          grantId: verified.familyId,
-          channel: 'native',
-          scopes: SCOPES,
-          requestId: ctx.requestId,
-          credential: token
-        };
-        ctx.sessionId = verified.sessionId;
-      } else if (options.required) {
-        throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
-      }
+      if (options.required) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
       next();
     } catch (error) {
       next(error);
     }
   };
 }
-
-/** Re-exported so existing routes keep their import; see security/rate-limit.ts. */
-export { rateLimit } from '../security/rate-limit.ts';
 
 export function notFound(): RequestHandler {
   return (_req, _res, next) => next(new AppError('NOT_FOUND'));

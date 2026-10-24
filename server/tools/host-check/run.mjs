@@ -9,7 +9,7 @@
  *
  * The point is that everything that can fail without a host should have
  * already failed here. What is left when this passes is exactly the set of
- * questions a host has to answer, and those are in spike/FINDINGS.md.
+ * questions a host has to answer, and those are in docs/host-compatibility.md.
  */
 
 import { spawn } from 'node:child_process';
@@ -133,7 +133,7 @@ process.stdout.write(`
     toggle a switch              Q4  is every write confirmed?
     open the same chat on a phone Q5 does any of it reach the phone?
 
-  Record what you see in spike/FINDINGS.md. Screenshots beat recollection.
+  Record what you see in docs/host-compatibility.md. Screenshots beat recollection.
   UI_DIAGNOSTICS=1 adds a panel to the device list showing what the host sent.
   Ctrl-C to stop.
 

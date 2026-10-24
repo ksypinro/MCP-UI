@@ -183,10 +183,10 @@ interface CodeRow {
  * attack it probably is rather than as an unknown code.
  *
  * "First one wins" is a property of the statement itself: only a caller whose
- * UPDATE finds `consumed_at IS NULL` gets an unflagged record. An earlier
- * version compared `consumed_at < now()` afterwards, which is only safe while
- * statements run one at a time; on a Postgres server two concurrent
- * redemptions could both see the code as fresh.
+ * UPDATE finds `consumed_at IS NULL` gets an unflagged record. Comparing
+ * `consumed_at < now()` afterwards would be safe only while statements run
+ * one at a time; on a Postgres server two concurrent redemptions could both
+ * see the code as fresh.
  */
 export async function consumeAuthorizationCode(
   db: Queryable, code: unknown

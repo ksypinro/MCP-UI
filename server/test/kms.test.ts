@@ -1,8 +1,8 @@
 /**
- * Key material through a KMS. Plan 4.3.
+ * Key material through a KMS.
  *
  * Runs against LocalKms, the software KMS: the contract a cloud adapter must
- * meet once gate G4 picks one. This file installs its own key material for
+ * meet. This file installs its own key material for
  * the whole process, which is safe because node runs each test file in a
  * process of its own.
  */
@@ -85,7 +85,7 @@ test('start-up fails closed on a tampered file, another KMS, or a missing key', 
 test('a provider without an adapter is refused by name', () => {
   process.env.KMS_PROVIDER = 'aws';
   try {
-    assert.throws(() => kmsFromEnvironment(join(dir, 'x.json')), /gate G4/);
+    assert.throws(() => kmsFromEnvironment(join(dir, 'x.json')), /not a known provider/);
   } finally {
     delete process.env.KMS_PROVIDER;
   }

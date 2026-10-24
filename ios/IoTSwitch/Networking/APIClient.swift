@@ -100,7 +100,7 @@ struct HTTPAPIClient: APIClient {
     }
 
     func me(accessToken: String) async throws -> Account {
-        let data = try await perform(.api("GET", "/v1/auth/me", nil, [:]), token: accessToken, isMutation: false)
+        let data = try await perform(.api("GET", "/v1/me", nil, [:]), token: accessToken, isMutation: false)
         return try decode(AccountResponse.self, data).account
     }
 

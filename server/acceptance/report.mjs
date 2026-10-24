@@ -120,7 +120,7 @@ if (outstanding.length > 0) {
     for (const reason of unproven) process.stdout.write(`  ${criterion.id}  ${reason}\n`);
     if (criterion.gap) process.stdout.write(`  ${criterion.id}  ${criterion.gap}\n`);
   }
-  process.stdout.write('\n  Host and device gaps close in spike/FINDINGS.md, with a host and a phone.\n'
+  process.stdout.write('\n  Host and device gaps close in docs/host-compatibility.md, with a host and a phone.\n'
     + '  Any other gap names what closes it.\n');
 }
 

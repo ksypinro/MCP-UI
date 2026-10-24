@@ -1,6 +1,6 @@
 /**
- * What the Device Service checks before it does anything. Plan 2.4,
- * architecture section 8.7.
+ * What the Device Service checks before it does anything. Architecture
+ * section 8.7.
  *
  * It trusts no caller and no request field. It accepts an internal token
  * only if all of this holds:

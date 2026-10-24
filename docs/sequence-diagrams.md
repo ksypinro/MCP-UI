@@ -122,7 +122,8 @@ switch ends up flipping itself back.
 ## 3. An MCP host connecting for the first time
 
 Implements §10.3 and AC-24. The host does the work; nothing is hard-coded in
-it.
+it. Claude and ChatGPT both identify themselves by a Client ID Metadata
+Document; a host without one registers at `POST /register` first.
 
 ```mermaid
 sequenceDiagram
@@ -147,13 +148,15 @@ sequenceDiagram
     H->>S: GET /.well-known/oauth-authorization-server
     S-->>H: endpoints, S256, CIMD, iss
 
-    H->>S: POST /register
-    S-->>H: client_id
-    H->>B: open /authorize<br/>PKCE S256 + resource
+    H->>B: open /authorize<br/>client_id = its CIMD URL, PKCE S256, resource
     B->>S: GET /authorize
-    S-->>B: hosted page — the only place a password is typed
-    U->>B: username + password
-    B->>S: POST /authorize
+    S->>S: fetch and check the metadata document
+    S-->>B: hosted sign-in — the only place a password is typed
+    U->>B: passkey, or username + password
+    B->>S: POST /login
+    S-->>B: consent: client host, redirect host, scopes
+    U->>B: Allow
+    B->>S: POST /consent
     S->>S: claim pending + mint code, one transaction
     S-->>B: 302 with code, state, iss
     B-->>H: code
@@ -178,7 +181,7 @@ sequenceDiagram
     participant H as Host
     participant S as Server
 
-    H->>S: resources/read ui://iot/devices.html
+    H->>S: resources/read ui://iot/devices.<hash>.html
     S-->>H: HTML, the mcp-app content type
     H->>V: render, sandboxed
 
@@ -205,46 +208,45 @@ own; the host owns the connection.
 
 ## 5. Refresh rotation, and a stolen token
 
-Implements §7.1 and §7.2. This is the deprecated first-party session path.
-OAuth refresh — hosts, and the app since phase 3 — follows the same rule per
-grant, with a 30-second window in which an identical retry gets the identical
-response instead of revoking (`rotateRefresh` in `oauth/store.ts`). A refresh
-token bound to a DPoP key also needs a proof from that key.
+Implements §7.1 and §7.2, for hosts and the app alike (`rotateRefresh` in
+`oauth/store.ts`). A refresh token bound to a DPoP key also needs a proof from
+that key.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant C as Client
-    participant S as Server
+    participant S as Authorization server
     participant DB as Database
 
-    C->>S: POST /v1/auth/refresh (R1)
+    C->>S: POST /token refresh_token=R1
     S->>DB: SELECT … FOR UPDATE
-    DB-->>S: not replaced, not revoked
-    S->>DB: insert session S2, mark S1 replaced_by S2
-    Note over S,DB: S1 is marked replaced but not<br/>revoked — its access token must<br/>live out its own TTL
+    DB-->>S: not replaced, grant live
+    S->>DB: insert R2, mark R1 replaced (replaced_at), issue access token
+    S->>S: seal the response for 30 s
     S-->>C: access token + R2
 
-    rect rgba(160, 40, 40, 0.10)
-    Note over C,S: later — R1 appears again
-    C->>S: POST /v1/auth/refresh (R1)
-    S->>DB: SELECT … FOR UPDATE
-    DB-->>S: replaced_by is set
-    Note over S: a legitimate client never<br/>replays a rotated token
-    S->>DB: revoke the entire family
-    S-->>C: 401
+    alt R1 again within 30 s, R2 never used (a race or a lost response)
+        C->>S: POST /token refresh_token=R1
+        S-->>C: the identical sealed response
+    else R1 again later, or after R2 was used
+        C->>S: POST /token refresh_token=R1
+        Note over S: a legitimate client never<br/>replays a rotated token
+        S->>DB: revoke the whole grant
+        S-->>C: 400 invalid_grant
     end
 ```
 
-The revocation happens **outside** the transaction that carries the refusal.
-Performing it inside meant the rollback undid it, and a detected theft revoked
-nothing.
+The outgoing access token is not revoked by rotation: it expires on its own
+schedule, so requests a client had in flight when it refreshed proactively
+still succeed. The revocation on reuse happens **outside** the transaction that
+carries the refusal, so the rollback cannot undo it.
 
 ---
 
 ## 6. A batch that tries to smuggle a write
 
-The privilege escalation found in review, and what stops it now.
+Why the gate authorizes every protected call in a body, not the first.
 
 ```mermaid
 sequenceDiagram
@@ -255,17 +257,9 @@ sequenceDiagram
 
     C->>G: [ list_devices, control_device ]
 
-    rect rgba(160, 40, 40, 0.10)
-    Note over G: before — only the first<br/>protected call was authorized
-    G->>SDK: devices:read satisfied, proceed
-    SDK-->>C: both executed, and the device changed
-    end
-
-    rect rgba(40, 120, 60, 0.10)
-    Note over G: now — every protected call,<br/>union of their scopes
+    Note over G: every protected call,<br/>union of their scopes:<br/>devices:read + devices:control
     G-->>C: 403 insufficient_scope
-    Note over G: nothing executes
-    end
+    Note over G,SDK: nothing executes. Authorizing only the first<br/>call would let the SDK run both, and change the device
 ```
 
 ---

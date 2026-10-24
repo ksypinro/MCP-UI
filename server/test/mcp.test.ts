@@ -7,6 +7,7 @@ import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { SCOPES } from '../src/oauth/config.ts';
 import { startServer, type Harness } from './oauth-helpers.ts';
+import { appClientFor } from './app-helpers.ts';
 import {
   callTool, errorCode, initialize, isToolError, rpc, structured, toolsList,
   tokenFor, tokenForExisting
@@ -263,19 +264,15 @@ test('one account cannot see or touch another account\'s devices', async () => {
 test('MCP and the REST API are the same devices, and the channel is recorded', async () => {
   const account = await tokenFor(h);
 
-  // Sign in to the first-party API as the same person.
-  const session = await fetch(`${h.base}/v1/auth/login`, {
-    method: 'POST', headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ username: account.username, password: 'correct horse battery staple' })
-  }).then((r) => r.json()) as any;
+  // The iOS app, signed in as the same person.
+  const { rows } = await h.db.query<{ id: string }>('SELECT id FROM accounts WHERE username = $1', [account.username]);
+  const app = await appClientFor(h.db, h.base, rows[0]!.id);
 
   const viaMcp = structured(
     await callTool(h.base, 'add_device', { name: 'Shared Lamp' }, account.accessToken)
   ).device;
 
-  const viaRest = await fetch(`${h.base}/v1/devices`, {
-    headers: { authorization: `Bearer ${session.accessToken}` }
-  }).then((r) => r.json()) as any;
+  const viaRest = (await app.call('GET', '/v1/devices')).body;
 
   assert.ok(
     viaRest.devices.some((device: { id: string }) => device.id === viaMcp.id),
@@ -296,7 +293,7 @@ test('only POST is accepted at the endpoint', async () => {
   assert.equal(get.headers.get('allow'), 'POST');
 });
 
-/* ------------------------------------------------- review regression tests */
+/* ------------------------------------------------- batches and tool errors */
 
 test('a batch cannot smuggle a call the token is not scoped for', async () => {
   // Confirmed exploitable before this was fixed: the gate authorized only the
@@ -371,11 +368,11 @@ test('a malformed body answers in JSON-RPC, not the REST envelope', async () => 
 test('an error result carries no structuredContent', async () => {
   /*
    * A client validates structuredContent against the tool's declared output
-   * schema whenever it is present — including on an error. Found by driving
-   * the server with the official SDK client: every version conflict came back
-   * to it as "structured content does not match the tool's output schema"
-   * rather than as the conflict, because the schema describes a device and an
-   * error is not one.
+   * schema whenever it is present — including on an error. The official SDK
+   * client does: a version conflict carrying structuredContent reaches it as
+   * "structured content does not match the tool's output schema" rather than
+   * as the conflict, because the schema describes a device and an error is
+   * not one.
    */
   const mine = (await tokenFor(h)).accessToken;
   const device = structured(

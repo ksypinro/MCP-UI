@@ -1,6 +1,6 @@
 /**
  * Write budgets: a hard ceiling on how fast any one grant can change things.
- * Plan 2.6, architecture section 8.6.
+ * Architecture section 8.6.
  *
  * Host approval of a write is a MAY in the MCP Apps specification, and a
  * person who clicked "always allow" has stopped looking. So the server keeps
@@ -10,8 +10,8 @@
  * cannot spend the iOS app's allowance; the per-device limit holds across
  * grants, because the device is what is being flapped.
  *
- * WRITE_BUDGETS=report (the default) logs what would have been refused and
- * allows it, so real usage can be measured first; `enforce` refuses.
+ * Enforced by default. WRITE_BUDGETS=report logs what would have been
+ * refused and allows it, for measuring real usage against a changed limit.
  */
 
 import { MemoryBucketStore, bucket, type BucketResult, type BucketStore } from './security/rate-limit.ts';
@@ -49,7 +49,7 @@ export class WriteBudgets {
     const refused = results.find((result) => !result.ok);
     if (!refused) return { ok: true };
     const tool = kind === 'control' ? 'control_device' : 'add_device';
-    const enforcing = process.env.WRITE_BUDGETS === 'enforce';
+    const enforcing = process.env.WRITE_BUDGETS !== 'report';
     metrics.inc('budget_exhausted', { tool, mode: enforcing ? 'enforce' : 'report' });
     if (!enforcing) {
       log('warn', 'write_budget_exceeded', { tool, grantId, reason: 'report-only: allowed' });

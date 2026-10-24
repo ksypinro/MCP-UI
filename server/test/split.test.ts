@@ -1,5 +1,5 @@
 /**
- * Profile M: the components apart, talking over mutual TLS. Plan 4.7.
+ * Profile M: the components apart, talking over mutual TLS.
  *
  * The authorization server's internal listener and the Device Service run on
  * real TLS sockets with certificates from a test CA; the MCP resource server
@@ -27,11 +27,11 @@ import { deviceServiceApp, internalAuthApp } from '../src/split/servers.ts';
 import { mtlsAgent, mtlsServer, ownWorkload, postJson, type TlsFiles } from '../src/split/tls.ts';
 import { remoteDeviceService, remoteExchanger, remoteVerifier } from '../src/split/remote.ts';
 import { useJwksUrl } from '../src/device-service/verify.ts';
-import { establishGrant, revokeGrantNow } from '../src/oauth/store.ts';
+import { revokeGrantNow } from '../src/oauth/store.ts';
 import { verifyOAuthAccessToken } from '../src/oauth/verify.ts';
-import { API_RESOURCE, FIRST_PARTY_CLIENT_ID } from '../src/oauth/config.ts';
 import type { WorkloadName } from '../src/security/workload.ts';
 import { issue, makeCa, makeProfileMCertificates } from '../tools/split/certs.ts';
+import { appClientFor } from './app-helpers.ts';
 import { callTool, structured, tokenFor } from './mcp-helpers.ts';
 import type { Harness } from './oauth-helpers.ts';
 
@@ -98,7 +98,7 @@ before(async () => {
   rsBase = `http://127.0.0.1:${await listen(createServer(finishApp(rs)))}`;
 
   const gw = baseApp();
-  gw.use(apiRouter(edge('api-gw'), null));
+  gw.use(apiRouter(edge('api-gw')));
   gwBase = `http://127.0.0.1:${await listen(createServer(finishApp(gw)))}`;
 });
 
@@ -123,24 +123,17 @@ test('an MCP call goes edge → introspection → exchange → Device Service, a
   assert.equal(rows[0]?.via, 'spiffe://iot-switch/mcp-rs', 'the audit names the workload that called');
 });
 
-test('the gateway serves the app with no database of its own, and the password endpoints are gone', async () => {
+test('the gateway serves the app with no database of its own', async () => {
   const { accessToken: hostToken } = await tokenFor(as);
   const verified = await verifyOAuthAccessToken(db, hostToken);
   assert.ok(verified.ok);
-  const app = await establishGrant(db, {
-    code: 'none', accountId: verified.accountId, clientId: FIRST_PARTY_CLIENT_ID, resource: API_RESOURCE,
-    scope: 'devices:read devices:control devices:create', withRefresh: false, dpopJkt: null
-  });
-  const auth = { authorization: `Bearer ${app.accessToken}` };
+  const app = await appClientFor(db, gwBase, verified.accountId);
 
-  const list = await fetch(`${gwBase}/v1/devices`, { headers: auth });
-  assert.equal(list.status, 200);
-  const me = await fetch(`${gwBase}/v1/auth/me`, { headers: auth });
+  assert.equal((await app.call('GET', '/v1/devices')).status, 200);
+  const me = await app.call('GET', '/v1/me');
   assert.equal(me.status, 200);
-  assert.equal((await me.json() as any).account.id, verified.accountId);
+  assert.equal(me.body.account.id, verified.accountId);
 
-  const login = await fetch(`${gwBase}/v1/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-  assert.equal(login.status, 410);
   const wrongDoor = await fetch(`${gwBase}/v1/devices`, { headers: { authorization: `Bearer ${hostToken}` } });
   assert.equal(wrongDoor.status, 401, 'an MCP token is not introspected for the gateway');
 });

@@ -73,12 +73,10 @@
   }
 
   /**
-   * Adds a handler. Several may listen to one notification.
-   *
-   * This used to overwrite, which meant a view listening for
-   * host-context-changed silently replaced the bridge's own handling of it —
-   * so the bridge never learned the display mode had changed, and the view
-   * asking for fullscreen was granted it and then rendered as if inline.
+   * Adds a handler. Several may listen to one notification: a view that
+   * listens for host-context-changed must not replace the bridge's own
+   * handling of it, or the bridge never learns the display mode changed and
+   * a view granted fullscreen renders as if inline.
    */
   function on(method, handler) {
     var existing = handlers.get(method);

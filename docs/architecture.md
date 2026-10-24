@@ -6,7 +6,8 @@ same business rules. This document explains how that is arranged and, where it
 matters, why it is arranged that way.
 
 The requirements it implements are in [`requirement.md`](../requirement.md).
-Section references throughout point there.
+Section references throughout point there. Authentication is covered in depth
+in [the authentication architecture](./authentication-architecture.md).
 
 ---
 
@@ -20,31 +21,36 @@ graph TB
         view["MCP App view<br/><small>sandboxed WebView</small>"]
     end
 
-    subgraph server [server/ — one Node process]
-        rest["REST API<br/><small>/v1/*</small>"]
+    subgraph server [server/]
+        oauth["Authorization server<br/><small>/authorize · /par · /token · account pages</small>"]
+        rest["REST API gateway<br/><small>/v1/*</small>"]
         mcp["MCP endpoint<br/><small>/mcp</small>"]
-        oauth["Authorization server<br/><small>/authorize · /token</small>"]
-        domain["Domain services<br/><small>accounts · devices · sessions</small>"]
+        ds["Device Service<br/><small>internal token only</small>"]
         db[("PostgreSQL")]
     end
 
-    ios -->|"DPoP-bound OAuth token"| rest
-    host -->|"bearer, OAuth token"| mcp
-    view -.->|"postMessage"| host
-    host -->|"forwards tools/call"| mcp
     ios -->|"PAR · browser sheet"| oauth
     host -->|"browser, OAuth"| oauth
+    ios -->|"DPoP-bound OAuth token"| rest
+    view -.->|"postMessage"| host
+    host -->|"forwards tools/call, OAuth token"| mcp
 
-    rest --> domain
-    mcp --> domain
-    oauth --> domain
-    domain --> db
+    rest -->|"token exchange"| oauth
+    mcp -->|"token exchange"| oauth
+    rest -->|"internal token"| ds
+    mcp -->|"internal token"| ds
+    oauth --> db
+    ds --> db
 ```
 
 The dotted line is the one people get wrong. **A view never talks to the
 server.** It speaks `postMessage` to its host, and the host decides whether to
 forward a `tools/call` over its own authenticated connection. A view holds no
 token and has no network reach of its own.
+
+The four components run in one process (profile S, `src/index.ts`) or as four
+processes over mutual TLS (profile M, `src/entry/`). The code and the token
+formats are the same in both.
 
 ---
 
@@ -64,30 +70,39 @@ addDevice(db, identity, { name, idempotencyKey })
 controlDevice(db, identity, { deviceId, state, expectedVersion })
 ```
 
+Only the Device Service calls them, and only after verifying an internal token
+(`device-service/verify.ts`). Neither edge adapter can reach them directly:
+
 ```mermaid
 graph LR
-    rest["http/routes-devices.ts"] --> svc
-    mcp["mcp/tools.ts"] --> svc
-    svc["domain/devices.ts<br/><small>validation · ownership · versions · audit</small>"] --> db[("devices")]
+    rest["http/routes-devices.ts"] -->|"exchange → internal token"| svc
+    mcp["mcp/tools.ts"] -->|"exchange → internal token"| svc
+    svc["device-service/service.ts<br/><small>verify token · build Identity</small>"] --> rules
+    rules["domain/devices.ts<br/><small>validation · ownership · versions · audit</small>"] --> db[("devices")]
 ```
 
-Both adapters do the same three things: verify a credential, turn it into an
-`Identity`, and translate the result. Neither validates a name, checks
-ownership or compares a version — those live in one place, so they cannot
-drift apart.
+Both adapters do the same three things: verify the caller's token, exchange it
+for a one-minute internal token scoped to the one operation, and translate the
+result. Neither validates a name, checks ownership or compares a version —
+those live in one place, so they cannot drift apart.
 
-`Identity` carries the channel:
+`Identity` is built from the verified internal token, never from a request
+field:
 
 ```ts
 interface Identity {
   accountId: string;
   channel: 'native' | 'mcp' | 'internal';
   requestId?: string;
+  clientId?: string;   // the OAuth client the person acted through
+  grantId?: string;    // the grant behind the request
+  via?: string;        // the workload that called the Device Service
+  authMethod?: string; // oauth or oauth-dpop
 }
 ```
 
-Every mutation is audited with it, which is what makes "who changed this, and
-from where" answerable after the fact.
+Every mutation is audited with it, which is what makes "who changed this,
+through what, and from where" answerable after the fact.
 
 ---
 
@@ -96,25 +111,32 @@ from where" answerable after the fact.
 ```
 server/
   src/
-    config.ts           BASE_URL and the values everything derives from
+    index.ts            profile S: everything in one process
+    entry/              profile M: one entry point per component
+    config.ts           the three origins and the values derived from them
     normalize.ts        the name folds — one implementation, imported everywhere
-    password.ts         Argon2id
+    password.ts         Argon2id over an HMAC under the password pepper
     errors.ts           the closed error-code set (§6.3)
-    db/                 driver seam, schema, migrations
-    domain/             accounts · sessions · devices · audit
+    db/                 PGlite and PostgreSQL drivers, the schema
+    domain/             accounts · devices · audit
+    device-service/     the only caller of the device rules
     http/               REST adapter: routes, middleware, one error mapping
-    oauth/              OAuth 2.1 authorization server
-    mcp/                MCP adapter: gate, tools, resources
+    oauth/              OAuth 2.1 authorization server and account pages
+    mcp/                MCP adapter: gate, policy, tools, resources
       ui/assets/        the four views, plus the shared bridge and stylesheet
-  test/                 286 tests
+    security/           keys, KMS, rate limits, DPoP replay, workloads
+    stores/             shared state: in memory, or Redis
+    split/              profile M: mTLS listeners and remote clients
+    observability/      logger, metrics, alerts
+  test/                 279 tests
   acceptance/           criteria mapped to the tests that establish them
-  tools/                dev harnesses: mock-host, host-check, client-check
+  tools/                host-check, mock-host, client-check, load, keys, split
 
 ios/
-  IoTSwitch/            SwiftUI app — models, networking, session, view models, views
+  IoTSwitch/            SwiftUI app — auth, models, networking, session, view models, views
   IoTSwitchTests/       60 tests
 
-spike/                  phase 0 feasibility spike, superseded and kept as a record
+ops/alerts.yml          Prometheus alert rules
 ```
 
 ---
@@ -124,9 +146,10 @@ spike/                  phase 0 feasibility spike, superseded and kept as a reco
 ```mermaid
 erDiagram
     accounts ||--o{ devices : owns
-    accounts ||--o{ sessions : has
     accounts ||--o{ oauth_grants : authorizes
-    sessions ||--o{ access_tokens : issues
+    accounts ||--o{ as_sessions : "signs in with"
+    accounts ||--o{ passkeys : registers
+    accounts ||--o{ consents : approves
     oauth_grants ||--o{ oauth_access_tokens : issues
     oauth_grants ||--o{ oauth_refresh_tokens : issues
     accounts ||--o{ idempotency_keys : scopes
@@ -137,6 +160,7 @@ erDiagram
         text username
         text normalized_username UK
         text password_hash
+        smallint password_pepper_version
     }
     devices {
         text id PK
@@ -148,11 +172,13 @@ erDiagram
     }
 ```
 
-Twelve tables in three groups: the domain (`accounts`, `devices`,
-`audit_events`), first-party sessions (`sessions`, `access_tokens`,
-`idempotency_keys`), and OAuth (`oauth_clients`,
-`oauth_pending_authorizations`, `oauth_authorization_codes`, `oauth_grants`,
-`oauth_access_tokens`, `oauth_refresh_tokens`).
+Sixteen tables in three groups: the domain (`accounts`, `devices`,
+`idempotency_keys`, `audit_events`); OAuth (`oauth_clients`, `cimd_cache`,
+`par_requests`, `oauth_pending_authorizations`, `oauth_authorization_codes`,
+`oauth_grants`, `oauth_access_tokens`, `oauth_refresh_tokens`); and the
+authorization server's own state (`as_sessions`, `consents`, `passkeys`,
+`webauthn_challenges`). Every token, code and session id is stored as an HMAC
+under a pepper held outside the database.
 
 ### Two constraints carry the acceptance criteria
 
@@ -179,9 +205,8 @@ no-op, which must not consume a version.
 
 ### Normalization
 
-One module, imported by every caller. If this logic forks, two devices whose
-names differ only by case both get created and AC-09 fails in a way that is
-unpleasant to trace.
+One module, imported by every caller. If this logic forked, two devices whose
+names differ only by case could both be created.
 
 | | Fold |
 | --- | --- |
@@ -189,8 +214,7 @@ unpleasant to trace.
 | Device name | trim → collapse internal whitespace → NFKC → lowercase |
 
 `toLowerCase` is not full Unicode case folding, and device names are not
-charset-restricted, so `Straße` and `STRASSE` remain distinct. Documented
-rather than overclaimed.
+charset-restricted, so `Straße` and `STRASSE` remain distinct.
 
 ---
 
@@ -201,52 +225,50 @@ graph TB
     subgraph fp [First-party · the iOS app]
         direction LR
         f1["PAR + browser sheet<br/>OAuth 2.1 + PKCE"] --> f2["oauth_grants + tokens<br/>audience: the API"]
-        f2 --> f3["DPoP-bound, 10 min<br/>resolved per request"]
+        f2 --> f3["DPoP-bound, 10 min<br/>verified per request"]
     end
     subgraph tp [Third-party · MCP hosts]
         direction LR
-        t1["OAuth 2.1 + PKCE"] --> t2["oauth_grants + tokens<br/>audience: /mcp"]
-        t2 --> t3["scoped bearer<br/>(DPoP if the host offers it)"]
+        t1["CIMD or DCR<br/>OAuth 2.1 + PKCE"] --> t2["oauth_grants + tokens<br/>audience: /mcp"]
+        t2 --> t3["scoped bearer, 1 h<br/>(DPoP if the host offers it)"]
     end
 ```
 
-Since phase 3 of the authentication redesign the iOS app signs in the way a
-host does: on the hosted page, through the system browser sheet, with tokens
-bound to a Secure Enclave key. Its grants are still separate from a host's.
-An app token is not accepted at `/mcp`, and a host token is not accepted at
-`/v1/*`. §7.2 requires that logging out of one does not silently claim to
-disconnect the other.
+The iOS app signs in the way a host does: on the hosted page, through the
+system browser sheet, with tokens bound to a Secure Enclave key. Its grants are
+separate from a host's. An app token is not accepted at `/mcp`, and a host
+token is not accepted at `/v1/*`. §7.2 requires that logging out of one does
+not silently claim to disconnect the other.
 
-The first-party session tables below still back the deprecated `/v1/auth/*`
-endpoints until they are switched off (`LEGACY_FIRST_PARTY_AUTH=off`).
+### Why tokens are opaque and verified per request
 
-### Why tokens are opaque and resolved per request
-
-§7.2 requires that logout invalidates access tokens **already issued**. A
-signed token validated only by signature and expiry cannot be withdrawn. So
-every protected request joins the token to its session:
+§7.2 requires that a revoked token stops working immediately, including
+access tokens **already issued**. A signed token validated only by signature
+and expiry cannot be withdrawn. So every protected request looks the token up
+by its HMAC, joined to its grant, and then checks its audience:
 
 ```sql
-SELECT t.account_id, t.session_id
-  FROM access_tokens t
-  JOIN sessions s ON s.id = t.session_id
- WHERE t.token_hash = $1
+SELECT g.account_id, g.client_id, t.grant_id, t.scope, t.audience, t.cnf_jkt
+  FROM oauth_access_tokens t
+  JOIN oauth_grants g ON g.id = t.grant_id
+ WHERE t.token_hash = ANY($1::text[])
    AND t.expires_at > now()
-   AND s.revoked_at IS NULL
+   AND g.revoked_at IS NULL
 ```
 
-That lookup is on the hot path by design, not by accident.
+That lookup is on the hot path by design, not by accident. In profile M the
+edges ask the authorization server instead, by introspection over mTLS, and
+cache an answer for at most 30 seconds, dropping it the moment a revocation
+event names its grant.
 
 ### Refresh rotation and reuse detection
 
-Each refresh appends a row to the same family and marks the old one replaced.
-Presenting an already-replaced token means it leaked, so the **whole family**
-is revoked — including the token the thief did not steal.
-
-Rotation marks the outgoing session replaced but does **not** revoke it. Its
-refresh token is already dead and its access token expires within minutes;
-revoking immediately would fail every request a client had in flight when it
-refreshed proactively.
+Each refresh issues a successor and marks the presented token replaced, under a
+row lock. Presenting an already-replaced token means it leaked, so the **whole
+grant** is revoked — except for a duplicate inside a 30-second window, which
+receives the identical response it would have received the first time. That
+keeps two racing workers, or a client whose response was lost, from being
+signed out.
 
 ### Scopes
 
@@ -255,7 +277,8 @@ initial authorization and named in the `401` challenge. Minimising to
 `devices:read` would make the first switch flip trigger a `403
 insufficient_scope` and a re-consent prompt mid-interaction, which is a poor
 experience for a light switch and slow to correct: hosts cache discovery
-documents globally for minutes.
+documents globally for minutes. Least privilege comes instead from the internal
+token, which carries only the one scope each operation needs.
 
 ---
 
@@ -281,49 +304,55 @@ body in the Express handler, before `transport.handleRequest`.
 
 **It collects every protected call in the body, not the first.** A JSON-RPC
 body may be a batch and the SDK executes all of it; authorizing only the first
-let a `devices:read` token send `[list_devices, control_device]` and change a
-device. That was a working privilege escalation, found in review.
+would let a `devices:read` token send `[list_devices, control_device]` and
+change a device.
 
 ### Transport errors versus tool errors
 
 | Failure | How it surfaces | Why |
 | --- | --- | --- |
 | No token, wrong scope | HTTP `401` / `403` with a challenge | Only this makes a host authorize |
-| Version conflict, name clash, not found | `200`, `isError: true` | A normal outcome the model should act on |
+| Version conflict, name clash, not found, budget exhausted | `200`, `isError: true` | A normal outcome the model should act on |
 
 Error results carry **no** `structuredContent`. A client validates it against
-the tool's declared `outputSchema` whenever present, including on errors — so
-an error shaped `{error:{…}}` against a schema describing `{device}` reached
-the caller as a protocol error instead of the conflict. Codes travel in
+the tool's declared `outputSchema` whenever present, including on errors, and
+an error is not the shape that schema describes. Codes travel in
 `_meta['iot/error']`, which is not schema-bound.
 
 ### Tool catalogue
 
 | Tool | Scope | View |
 | --- | --- | --- |
-| `list_devices` | `devices:read` | `ui://iot/devices.html` |
-| `get_device` | `devices:read` | `ui://iot/device.html` |
+| `list_devices` | `devices:read` | devices |
+| `get_device` | `devices:read` | device |
 | `control_device` | `devices:control` | — |
 | `add_device` | `devices:create` | — |
 | `get_auth_status` | public | — |
-| `show_auth` | public | `ui://iot/auth.html` |
-| `show_add_device` | public | `ui://iot/add-device.html` |
+| `show_auth` | public | auth |
+| `show_add_device` | public | add-device |
 
 Both presentation tools are public. Gating a form's *display* behind a write
 scope means merely showing it can trigger a `403` and a re-consent prompt
 before the person has typed anything.
 
 `control_device` and `add_device` are `idempotentHint: false`. Replaying
-either fails rather than repeating, and a host may retry on that hint.
+either fails rather than repeating, and a host may retry on that hint. Both
+draw on write budgets (6 switches a minute per device; 20 switches a minute and
+10 new devices an hour per grant), which hold whatever a host's approval
+settings are.
 
 ---
 
 ## 7. The views
 
-Four `ui://` resources, each assembled at startup from a shared stylesheet, a
+Four `ui://` resources, each assembled at start-up from a shared stylesheet, a
 shared bridge and one view script — all inlined, which is what lets
 `_meta.ui.csp` stay empty. A host blocks every external origin by default; a
 page needing none cannot be broken by that policy and cannot widen it.
+
+Each URI carries a hash of its page (`ui://iot/devices.e824b396.html`). Hosts
+cache templates by URI across reconnects, so changed code has to be a new URI
+or a host keeps running the old one.
 
 ```mermaid
 sequenceDiagram
@@ -347,15 +376,17 @@ Constraints that shaped the design:
 - **Handlers are registered before the handshake.** A host may push
   `tool-input` or `tool-result` the instant it completes.
 - **The sender is identified by window reference**, not origin — origin is
-  unpredictable inside a sandbox.
+  unpredictable inside a sandbox. After the handshake every outbound message
+  goes to the origin recorded from the host's reply.
 - **A size is reported only when it changed.** A host that resizes in response
   would otherwise drive an unbounded loop.
 - **Safe areas come from `hostContext`**, not CSS `env()`. Inside a chat
   WebView the page is not the thing the notch overlaps, and a control outside
   the insets cannot be tapped.
-- **Handlers are additive.** A registry keyed by method let a view listening
-  for `host-context-changed` silently replace the bridge's own handling, so
-  the bridge never learned the display mode had changed.
+- **Handlers are additive, and context updates merge.** `host-context-changed`
+  carries only the fields that changed, and the reply to
+  `ui/request-display-mode` is the mode actually granted, so the bridge applies
+  both rather than replacing its whole context.
 
 ### The inline row budget
 
@@ -364,9 +395,9 @@ the rest, because on a phone the conversation owns vertical scrolling: a pan
 starting inside an inline card scrolls the chat, and the host clips overflow.
 A long list rendered inline is partly **unreachable**, not merely ugly.
 
-The number is **4**, which is published guidance and not a measurement. It is
-commented `NOT MEASURED`. Question 2 in
-[`spike/FINDINGS.md`](../spike/FINDINGS.md) exists to replace it.
+The number is **4**, Claude's published guidance. On a desktop browser there is
+room for more; no phone measurement has been taken yet
+([host compatibility](./host-compatibility.md), Q2).
 
 ---
 
@@ -410,25 +441,31 @@ Three outcomes carry the weight:
   displayed truth.
 
 Refresh is single-flight and proactive, once a quarter of the token's life is
-left. The backend revokes the whole grant on a replayed refresh token, so two
-requests racing to refresh would not merely duplicate work — they would sign
-the user out.
+left. The backend revokes the whole grant on a replayed refresh token outside
+its grace window, so two requests racing to refresh must share one refresh.
+Only `invalid_grant` signs the person out; being offline does not.
 
 ---
 
-## 9. Storage
+## 9. Storage and shared state
 
-The store is [PGlite](https://pglite.dev): real PostgreSQL compiled to
-WebAssembly. Same SQL, same constraint enforcement, same SQLSTATEs — the
-schema and every query run unmodified on a PostgreSQL server.
+Without `DATABASE_URL` the store is [PGlite](https://pglite.dev): real
+PostgreSQL compiled to WebAssembly, persisted in `DATABASE_PATH`. Same SQL,
+same constraint enforcement, same SQLSTATEs. With `DATABASE_URL` it is a
+PostgreSQL server (`db/pg.ts`), with bounded connect and query timeouts: a
+database that is down is a fast `503`, never a hung request. The schema is
+applied under an advisory lock, so several processes starting at once apply it
+once.
 
-What it is not is a server. It runs in-process and serialises queries, so no
-two statements are ever truly concurrent. **The concurrency tests prove the
-logic is correct when two callers start from the same observed state; they do
-not prove behaviour under genuine row-level contention.**
+PGlite runs in-process and serialises queries, so on it the concurrency tests
+prove the logic is correct when two callers start from the same observed
+state. The same tests on PostgreSQL (`npm run test:pg`) prove it under genuine
+row-level contention (AC-43).
 
-Everything above `src/db` is written against a `Queryable` interface and plain
-PostgreSQL SQL precisely so that closing that gap is one file.
+Rate-limit and budget counters, used DPoP proof ids, sealed refresh responses
+and revocation events live in memory, or in Redis when `REDIS_URL` is set, so
+that more than one process can serve traffic. Redis-backed stores fail closed:
+with Redis unreachable, requests get `503`.
 
 ---
 
@@ -436,35 +473,13 @@ PostgreSQL SQL precisely so that closing that gap is one file.
 
 | | |
 | --- | --- |
-| Inline row budget | Published guidance, not measured |
-| Shared state | In memory unless `REDIS_URL` is set; profile M requires it |
-| KMS | Provider-neutral, with a software stand-in; the cloud adapter waits on G4 |
+| Inline row budget | Published guidance; measured on desktop, not yet on a phone |
+| KMS | `local` (software) is built in; a cloud provider needs an adapter implementing `Kms` |
+| Universal-link callback | Needs an Apple Developer team: `APPLE_TEAM_ID` and the associated-domains entitlement. Until then the app uses its custom scheme |
 | Case folding | `toLowerCase`, not full Unicode folding |
 | DCR eviction | Runs on registration, not on a timer |
 | iPad | Renders, but as the iPhone layout scaled up |
 | iOS signing | Ad-hoc; a distribution build needs a real team |
-| No deployment | Everything has run on localhost or a tunnel |
 
-Eight acceptance criteria cannot be closed without a host account or a
-physical device. `npm run acceptance` names each one.
-
-The redesign that addresses these and the authentication gaps found in
-review is in [Authentication Architecture v2](./authentication-architecture/authentication-architecture.md),
-delivered by its [implementation plan](./authentication-architecture/implementation-plan.md).
-Phases 0 to 3 of that plan are implemented: hardened authorization pages,
-race-safe codes and refresh, the ChatGPT challenge form, bridge origin
-pinning, the iOS refresh fix, three origins, typed tokens stored as keyed
-hashes, a peppered password store, separate sign-in and consent with a
-remembered-consent registry, hardened CIMD and DCR, and — behind both front
-doors — a Device Service reachable only with a one-minute internal token
-obtained by token exchange, a tool policy table with write budgets, and an
-audit trail naming the client, grant and adapter behind every change. Phase 3
-moved the iOS app onto the authorization server: browser sign-in, PAR, and
-DPoP-bound tokens from a Secure Enclave key. Phase 4 added the production
-infrastructure: a PostgreSQL driver with CI on both databases, Redis-backed
-shared state that fails closed, KMS-held keys, a cross-process revocation bus,
-passkeys, a connected-apps page, a four-process split (profile M) over mutual
-TLS with certificate-bound internal tokens, and a redacting logger with
-security metrics and alerts.
-Sections 2 and 6 above describe the system before those phases; the v2
-document describes it after.
+Some acceptance criteria cannot be closed without a host account or a physical
+device. `npm run acceptance` names each one and what closes it.

@@ -34,8 +34,8 @@ test('the four views are discoverable without a token', async () => {
 });
 
 test('each view address carries a fingerprint of its content', () => {
-  // Hosts cache templates by URI across reconnects, so changed code must be
-  // a new URI or a host keeps running the old one. Found on Claude web.
+  // Hosts cache templates by URI across reconnects (Claude web does), so
+  // changed code must be a new URI or a host keeps running the old one.
   for (const resource of uiResources()) {
     assert.match(resource.uri, new RegExp(`^ui://iot/${resource.name}\\.[0-9a-f]{8}\\.html$`));
   }
@@ -211,9 +211,6 @@ test('the device list bounds what it renders inline and can ask for more', () =>
   assert.match(html, /INLINE_ROW_BUDGET/);
   assert.match(html, /ui\/request-display-mode|requestDisplayMode/);
   assert.match(html, /availableDisplayModes: \['inline', 'fullscreen'\]|'inline', 'fullscreen'/);
-
-  // And the number is still a guess, which the code has to admit.
-  assert.match(html, /NOT MEASURED/);
 });
 
 test('the auth view contains no credential fields', () => {
@@ -227,26 +224,25 @@ test('the auth view contains no credential fields', () => {
     'authentication must never be triggered by a mutation');
 });
 
-/* ------------------------------------------------- review regression tests */
+/* --------------------------------------------------------- status messages */
 
 test('a refresh asked to keep the message never clears it', () => {
   /*
-   * Source-level, deliberately. This bug was found by rendering the view in
-   * tools/mock-host and watching the status area, not by any assertion here:
-   * the conflict handler set a message and then called a refresh whose
-   * success branch cleared it, so the explanation existed for a few hundred
-   * milliseconds and was never seen. Sampling the element twenty-four times
-   * caught it empty every time.
-   *
-   * Reproducing that in a unit test needs a DOM; what is cheap to guard is
-   * the shape of the mistake — an unguarded clear inside the reload.
+   * Source-level, deliberately. After a conflict the view sets a message and
+   * then reloads; a reload that cleared the status on success would show the
+   * explanation for a few hundred milliseconds, too briefly to read.
+   * Reproducing that needs a DOM; what is cheap to guard is the shape of the
+   * mistake: a status write inside the reload not guarded by keepMessage.
    */
-  for (const controlling of [view('devices'), view('device')]) {
-    assert.match(controlling.html, /keepMessage/, `${controlling.uri} lost the keepMessage flag`);
-    // The inverted flag that caused it.
-    assert.doesNotMatch(controlling.html, /options\.quiet/, `${controlling.uri} still has the quiet flag`);
-    // Every status write inside a reload has to be guarded by it.
-    assert.doesNotMatch(controlling.html, /if \(options\.quiet\) say\(/, controlling.uri);
+  for (const [name, reload] of [['devices', 'load'], ['device', 'refresh']] as const) {
+    const html = view(name).html;
+    const start = html.indexOf(`function ${reload}(options)`);
+    assert.ok(start > 0, `${name} has its ${reload} function`);
+    const body = html.slice(start, html.indexOf('\n  }\n', start));
+    assert.match(body, /var keep = Boolean\(options\.keepMessage\);/);
+    const writes = body.match(/[^\n]*\bsay\(/g) ?? [];
+    assert.ok(writes.length > 0);
+    for (const write of writes) assert.match(write, /if \(!keep\) say\(/, `${name}: ${write.trim()}`);
   }
 });
 

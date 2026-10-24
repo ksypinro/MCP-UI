@@ -1,5 +1,5 @@
 /**
- * DPoP proof verification (RFC 9449), each refusal on its own. Plan 3.1.
+ * DPoP proof verification (RFC 9449), each refusal on its own.
  */
 
 import test from 'node:test';

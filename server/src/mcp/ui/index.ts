@@ -42,8 +42,8 @@ export interface UiResource {
 /**
  * UI_DIAGNOSTICS=1 adds a panel to the device list that shows the build, a
  * random id for this copy of the view, and every message the host sent it.
- * For host verification only (spike/FINDINGS.md): it is how we learned what a
- * host actually does, as opposed to what the specification says it does.
+ * For host verification (docs/host-compatibility.md): it shows what a host
+ * actually does, as opposed to what the specification says it does.
  */
 const DIAGNOSTICS = process.env.UI_DIAGNOSTICS === '1';
 
@@ -81,8 +81,7 @@ ${read(scriptFile)}
  * Built once at startup.
  *
  * Hosts cache these templates globally, by URI, and keep serving a cached
- * copy across reconnects: host verification found Claude web still running
- * the old device list after its code changed. So every URI carries a hash of
+ * copy across a disconnect and reconnect. So every URI carries a hash of
  * its page — `ui://iot/devices.3f9a1c2b.html` — and changed code is a new
  * template that every host must fetch. Nothing user-specific may ever be
  * built into one: per-account data arrives only through an authorized tool

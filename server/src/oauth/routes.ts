@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import type { Db } from '../db/index.ts';
 import type { Infrastructure } from '../stores/index.ts';
-import { rateLimit } from '../http/middleware.ts';
+import { rateLimit } from '../security/rate-limit.ts';
 import { metadataRouter } from './metadata.ts';
 import { jwksRouter } from './jwks.ts';
 import { authorizeRoutes } from './authorize.ts';

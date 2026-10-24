@@ -1,6 +1,6 @@
 /**
- * The shared-state stores, one contract for every implementation. Plan 4.2,
- * 4.4, AC-44 and AC-47.
+ * The shared-state stores, one contract for every implementation. AC-44 and
+ * AC-47.
  *
  * The in-memory stores always run. The Redis ones run when TEST_REDIS_URL is
  * set (CI sets it), each under a prefix of its own. Two Redis-backed

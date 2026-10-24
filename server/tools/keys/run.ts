@@ -1,5 +1,5 @@
 /**
- * Key rotation for KMS-held key material. Plan 4.3.
+ * Key rotation for KMS-held key material.
  *
  *   npm run keys -- rotate-pepper     every 90 days
  *   npm run keys -- rotate-signing    every 30 days
