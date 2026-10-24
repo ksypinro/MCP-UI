@@ -797,6 +797,19 @@ export async function verifyProof(proof: string, opts: {
 - **Acceptance report.** It now treats a skipped test as unproven, not passing, and a criterion can require Postgres or Redis, so a PGlite-only run reports AC-30, AC-43, AC-44 and AC-47 as partial rather than proven.
 - **Exit review, still to do.** Run `npm run test:pg` locally (CI runs it on every PR), then the load test (`npm run load`) and the failover drill on Postgres + Redis. Docker was unavailable on the development machine for the last part of the phase.
 
+### Phase 4 exit review (24 Oct 2026)
+
+Run on a laptop: PostgreSQL 17.11 and Redis 7.4.11 in local containers, with the server and the load generator on the same machine. The numbers are for comparison between runs, not capacity planning.
+
+- **Suite on real backends.** `npm run acceptance` with PostgreSQL and Redis ran 284 of 284 tests, none skipped, the four-process run included: **33 of 47 proven**, 11 partial, 3 open. AC-30, AC-43 and AC-44 move to proven. CI's PostgreSQL + Redis leg had already passed on PR #15.
+- **Load, profile S.** 100 hosts at 4 requests a second for 60 s: 403 requests/s, **no failures**. p50 9–15 ms, p95 205–228 ms, p99 under 415 ms. At 25 hosts p95 is 25–36 ms, so the tail at 100 is queueing in one Node process sharing the CPU with the load generator. The spec's target (§11) is p95 under 1 s. The internal-token cache hit 98.4%.
+- **Load, profile M.** The same load against four processes over mTLS: 410 requests/s, no failures, p95 25–40 ms, p99 under 100 ms. The work is spread over four processes. The edge's introspection cache hit 95%, the exchange cache 97.9%.
+- **Rate limiting under load.** An unpaced first run was 87% 429s. That is correct: 600 requests a minute per grant, counted in Redis. The load tool now paces itself, and reports 429s apart from failures.
+- **Write budgets.** The load switches each device twice a second against a budget of six a minute, so report mode logged about 17,000 `write_budget_exceeded` lines in a minute. Expect that volume from a runaway agent before turning on `WRITE_BUDGETS=enforce`.
+- **Failover, Redis (profile S and M).** Redis stopped for 26 s under 200 requests/s. **Every request in the outage got a 503**, none was served. The refusals were fast (p95 16–20 ms) and traffic recovered by itself within 5 s of Redis returning. After the restart, a revocation still crossed processes in 10 ms: the subscriber resubscribes.
+- **Failover, PostgreSQL. Found and fixed a defect.** The first run failed closed, but badly: the pool waited for ever for a connection, so for about 10 s nothing completed at all, and the outage then surfaced as 500s with 2,482 stack traces. `db/pg.ts` now bounds the connect (2 s) and any query (10 s), and turns connection-class failures into 503, logged at most once a second. Rerun: every outage request got a fast 503 (p95 23 ms), no stalled interval, 26 log lines, recovery within 5 s. `test/db-outage.test.ts` pins both behaviours.
+- **Still open:** a platform passkey in Safari and Chrome on a real device (AC-45). This belongs with the phase 3 device review, and needs a phone and an Apple team (G3).
+
 ---
 
 ## 9. Testing strategy
@@ -964,7 +977,7 @@ Extended in phase 1 and rerun at every phase exit, with results recorded in `spi
 - [x] 4.6 Connected apps page
 - [x] 4.7 Profile M split
 - [x] 4.8 Observability
-- [ ] Exit review: load test and failover drill on Postgres + Redis
+- [x] Exit review: load test and failover drill on Postgres + Redis (24 Oct; one defect found and fixed)
 
 ### Phase 5 (optional)
 - [ ] 5.1 Enterprise-Managed Authorization (ID-JAG grant, tenant issuer allowlist, subject links), 6 d

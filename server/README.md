@@ -11,7 +11,7 @@ adapter will call the same device service directly rather than over HTTP.
 ```bash
 npm install
 npm start          # http://localhost:4000
-npm test           # 284 tests on PGlite and in-memory stores
+npm test           # 286 tests on PGlite and in-memory stores
 npm run test:pg    # the same on PostgreSQL 17 and Redis 7 (local containers, or CI)
 npm run typecheck
 ```

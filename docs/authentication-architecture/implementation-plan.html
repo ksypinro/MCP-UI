@@ -72,11 +72,11 @@ footer{border-top:1px solid var(--line);padding:32px;text-align:center;font-size
   article h2{font-size:24px;margin-top:64px}figure a{padding:14px;border-radius:12px}}
 </style></head><body>
 <div id="progress"></div><div id="lb" role="dialog" aria-modal="true" aria-label="Diagram"><button class="close" type="button" aria-label="Close">×</button><img alt=""></div>
-<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 45 min read</div></header>
+<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 47 min read</div></header>
 <div class="layout">
 <main>
 <section class="hero"><div class="eyebrow">Implementation plan</div><h1>Authentication v2 Implementation Plan</h1>
-<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>45 min read</span></div></section>
+<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>47 min read</span></div></section>
 <article><p><strong>Status:</strong> Proposed · <strong>Date:</strong> 18 October 2026 · <strong>Implements:</strong> <a href="authentication-architecture.md">Authentication Architecture v2</a> · <strong>Codebase:</strong> <code>server/</code> (Node 22+, TypeScript run by type-stripping, Express 5, MCP SDK 1.30, PGlite) and <code>ios/</code> (SwiftUI, iOS 17.0, Swift 5)</p>
 <p>This plan turns the architecture into <strong>46 pull requests across six phases</strong> (six of them are the iOS series 3.6a–f). Every PR is small enough to review in one sitting and ships green. Every behaviour change sits behind a flag or is additive until its phase exit review. Section references such as &quot;arch §7.3&quot; point into the architecture document.</p>
 <hr>
@@ -926,6 +926,18 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <li><strong>Acceptance report.</strong> It now treats a skipped test as unproven, not passing, and a criterion can require Postgres or Redis, so a PGlite-only run reports AC-30, AC-43, AC-44 and AC-47 as partial rather than proven.</li>
 <li><strong>Exit review, still to do.</strong> Run <code>npm run test:pg</code> locally (CI runs it on every PR), then the load test (<code>npm run load</code>) and the failover drill on Postgres + Redis. Docker was unavailable on the development machine for the last part of the phase.</li>
 </ul>
+<h3 id="phase-4-exit-review-24-oct-2026">Phase 4 exit review (24 Oct 2026)</h3>
+<p>Run on a laptop: PostgreSQL 17.11 and Redis 7.4.11 in local containers, with the server and the load generator on the same machine. The numbers are for comparison between runs, not capacity planning.</p>
+<ul>
+<li><strong>Suite on real backends.</strong> <code>npm run acceptance</code> with PostgreSQL and Redis ran 284 of 284 tests, none skipped, the four-process run included: <strong>33 of 47 proven</strong>, 11 partial, 3 open. AC-30, AC-43 and AC-44 move to proven. CI&#39;s PostgreSQL + Redis leg had already passed on PR #15.</li>
+<li><strong>Load, profile S.</strong> 100 hosts at 4 requests a second for 60 s: 403 requests/s, <strong>no failures</strong>. p50 9–15 ms, p95 205–228 ms, p99 under 415 ms. At 25 hosts p95 is 25–36 ms, so the tail at 100 is queueing in one Node process sharing the CPU with the load generator. The spec&#39;s target (§11) is p95 under 1 s. The internal-token cache hit 98.4%.</li>
+<li><strong>Load, profile M.</strong> The same load against four processes over mTLS: 410 requests/s, no failures, p95 25–40 ms, p99 under 100 ms. The work is spread over four processes. The edge&#39;s introspection cache hit 95%, the exchange cache 97.9%.</li>
+<li><strong>Rate limiting under load.</strong> An unpaced first run was 87% 429s. That is correct: 600 requests a minute per grant, counted in Redis. The load tool now paces itself, and reports 429s apart from failures.</li>
+<li><strong>Write budgets.</strong> The load switches each device twice a second against a budget of six a minute, so report mode logged about 17,000 <code>write_budget_exceeded</code> lines in a minute. Expect that volume from a runaway agent before turning on <code>WRITE_BUDGETS=enforce</code>.</li>
+<li><strong>Failover, Redis (profile S and M).</strong> Redis stopped for 26 s under 200 requests/s. <strong>Every request in the outage got a 503</strong>, none was served. The refusals were fast (p95 16–20 ms) and traffic recovered by itself within 5 s of Redis returning. After the restart, a revocation still crossed processes in 10 ms: the subscriber resubscribes.</li>
+<li><strong>Failover, PostgreSQL. Found and fixed a defect.</strong> The first run failed closed, but badly: the pool waited for ever for a connection, so for about 10 s nothing completed at all, and the outage then surfaced as 500s with 2,482 stack traces. <code>db/pg.ts</code> now bounds the connect (2 s) and any query (10 s), and turns connection-class failures into 503, logged at most once a second. Rerun: every outage request got a fast 503 (p95 23 ms), no stalled interval, 26 log lines, recovery within 5 s. <code>test/db-outage.test.ts</code> pins both behaviours.</li>
+<li><strong>Still open:</strong> a platform passkey in Safari and Chrome on a real device (AC-45). This belongs with the phase 3 device review, and needs a phone and an Apple team (G3).</li>
+</ul>
 <hr>
 <h2 id="9-testing-strategy">9. Testing strategy</h2>
 <h3 id="91-new-and-changed-test-files">9.1 New and changed test files</h3>
@@ -1347,7 +1359,7 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <li><input checked="" disabled="" type="checkbox"> 4.6 Connected apps page</li>
 <li><input checked="" disabled="" type="checkbox"> 4.7 Profile M split</li>
 <li><input checked="" disabled="" type="checkbox"> 4.8 Observability</li>
-<li><input disabled="" type="checkbox"> Exit review: load test and failover drill on Postgres + Redis</li>
+<li><input checked="" disabled="" type="checkbox"> Exit review: load test and failover drill on Postgres + Redis (24 Oct; one defect found and fixed)</li>
 </ul>
 <h3 id="phase-5-optional">Phase 5 (optional)</h3>
 <ul>
@@ -1411,6 +1423,7 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <a class="l3" href="#pr-47-profile-m-split-6-d">PR 4.7: Profile M split · 6 d</a>
 <a class="l3" href="#pr-48-observability-and-leak-response-3-d">PR 4.8: Observability and leak response · 3 d</a>
 <a class="l3" href="#phase-4-as-built">Phase 4 as built</a>
+<a class="l3" href="#phase-4-exit-review-24-oct-2026">Phase 4 exit review (24 Oct 2026)</a>
 <a class="l2" href="#9-testing-strategy">9. Testing strategy</a>
 <a class="l3" href="#91-new-and-changed-test-files">9.1 New and changed test files</a>
 <a class="l3" href="#92-probes-kept-as-regression-tests">9.2 Probes kept as regression tests</a>

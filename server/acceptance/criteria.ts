@@ -445,9 +445,12 @@ export const CRITERIA: Criterion[] = [
     evidence: [
       'redis: an unreachable store refuses with 503 rather than letting requests through',
       'an unreachable authorization server is a 503 at the edge, never a pass',
-      'start-up fails closed on a tampered file, another KMS, or a missing key'
+      'start-up fails closed on a tampered file, another KMS, or a missing key',
+      'an unreachable database is a fast 503, not a hang',
+      'a connection the server terminates is a 503, and the pool recovers'
     ],
-    requires: ['redis'],
-    gap: 'The failover drill — Redis stopped under load — is the phase 4 exit review.'
+    // The drill itself (Redis and PostgreSQL stopped under load, profile S and
+    // M) is recorded in the implementation plan's phase 4 exit review.
+    requires: ['postgres', 'redis']
   }
 ];

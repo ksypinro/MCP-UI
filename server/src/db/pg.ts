@@ -17,13 +17,48 @@
  * Unlike PGlite, statements here really do run at the same time. That is the
  * point: the concurrency tests prove row-lock behaviour under contention only
  * when they run against this driver.
+ *
+ * A database that is down fails fast and closed. Waiting for a connection is
+ * bounded (DATABASE_CONNECT_TIMEOUT_MS, 2 s) and so is any one query
+ * (DATABASE_QUERY_TIMEOUT_MS, 10 s), and a lost or refused connection becomes
+ * 503 SERVICE_UNAVAILABLE rather than a 500 with a stack trace. Without the
+ * timeouts the pool waits for ever, and every request queues behind the
+ * outage. Found in the phase 4 failover drill.
  */
 
 import pg from 'pg';
 import type { Db, QueryResult, Tx } from './index.ts';
 import { log } from '../observability/log.ts';
+import { AppError } from '../errors.ts';
 
 const INT8 = 20;
+
+/** SQLSTATE classes and socket errors that mean "the database is not there", not "this query is wrong". */
+const UNAVAILABLE_CODES = new Set([
+  'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'ENOTFOUND', 'EHOSTUNREACH',
+  '57P01', '57P02', '57P03', // admin_shutdown, crash_shutdown, cannot_connect_now
+  '53300'                    // too_many_connections
+]);
+
+function unavailable(error: unknown): boolean {
+  const { code, message } = (error ?? {}) as { code?: string; message?: string };
+  if (code && (UNAVAILABLE_CODES.has(code) || code.startsWith('08'))) return true; // class 08: connection exception
+  return /Connection terminated|timeout exceeded when trying to connect|Query read timeout|Client has encountered a connection error/i
+    .test(message ?? '');
+}
+
+let lastReported = 0;
+
+/** Rethrows a connection-class failure as a 503, reported at most once a second. */
+function asServiceError(error: unknown): unknown {
+  if (!unavailable(error)) return error;
+  const now = Date.now();
+  if (now - lastReported > 1_000) {
+    lastReported = now;
+    log('error', 'db_unavailable', { detail: (error as Error)?.message });
+  }
+  return new AppError('SERVICE_UNAVAILABLE');
+}
 const DATE = 1082;
 
 const types = {
@@ -72,6 +107,8 @@ export async function createPgDb(options: PgOptions): Promise<Db> {
     connectionString,
     max,
     types,
+    connectionTimeoutMillis: Number(process.env.DATABASE_CONNECT_TIMEOUT_MS ?? 2_000),
+    query_timeout: Number(process.env.DATABASE_QUERY_TIMEOUT_MS ?? 10_000),
     ...(schema ? { options: `-c search_path=${schema}` } : {})
   });
   // An idle connection dropped by the server must not crash the process; the
@@ -79,8 +116,12 @@ export async function createPgDb(options: PgOptions): Promise<Db> {
   pool.on('error', (error) => log('error', 'db_idle_connection', { detail: error.message }));
 
   const run = async <T>(target: pg.Pool | pg.PoolClient, sql: string, params?: unknown[]): Promise<QueryResult<T>> => {
-    const result = await target.query(sql, params as unknown[] | undefined);
-    return { rows: result.rows as T[], affectedRows: result.rowCount ?? 0 };
+    try {
+      const result = await target.query(sql, params as unknown[] | undefined);
+      return { rows: result.rows as T[], affectedRows: result.rowCount ?? 0 };
+    } catch (error) {
+      throw asServiceError(error);
+    }
   };
 
   const db: Db = {
@@ -89,17 +130,32 @@ export async function createPgDb(options: PgOptions): Promise<Db> {
     async exec(sql: string) {
       // No parameters, so pg uses the simple query protocol, which accepts
       // several statements at once.
-      await pool.query(sql);
+      try {
+        await pool.query(sql);
+      } catch (error) {
+        throw asServiceError(error);
+      }
     },
 
     async transaction<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-      const client = await pool.connect();
+      let client: pg.PoolClient;
+      try {
+        client = await pool.connect();
+      } catch (error) {
+        throw asServiceError(error);
+      }
       let broken = false;
       try {
         await client.query('BEGIN');
         const tx: Tx = {
           query: <U>(sql: string, params?: unknown[]) => run<U>(client, sql, params),
-          async exec(sql: string) { await client.query(sql); }
+          async exec(sql: string) {
+            try {
+              await client.query(sql);
+            } catch (error) {
+              throw asServiceError(error);
+            }
+          }
         };
         const outcome = await fn(tx);
         await client.query('COMMIT');
@@ -112,7 +168,7 @@ export async function createPgDb(options: PgOptions): Promise<Db> {
           // client in an unknown transaction state to the pool.
           broken = true;
         }
-        throw error;
+        throw asServiceError(error);
       } finally {
         client.release(broken);
       }

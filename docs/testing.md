@@ -1,6 +1,6 @@
 # Testing and verification
 
-344 automated tests, plus four harnesses for the things tests cannot reach.
+346 automated tests, plus four harnesses for the things tests cannot reach.
 This document explains what each layer proves — and, as importantly, what it
 does not.
 
@@ -10,8 +10,8 @@ does not.
 
 | | Count | Command | What it establishes |
 | --- | --- | --- | --- |
-| Server | 284 | `npm test` | Domain rules, HTTP contract, OAuth, DPoP and PAR, passkeys, account pages, stores, KMS, the split, MCP protocol, views |
-| Server on real backends | the same 284 | `npm run test:pg` | The same suite on PostgreSQL 17 and Redis 7: real row locks, shared stores, four processes |
+| Server | 286 | `npm test` | Domain rules, HTTP contract, OAuth, DPoP and PAR, passkeys, account pages, stores, KMS, the split, MCP protocol, views |
+| Server on real backends | the same 286 | `npm run test:pg` | The same suite on PostgreSQL 17 and Redis 7: real row locks, shared stores, four processes |
 | iOS | 60 | `xcodebuild … test` | View-model state machines, browser sign-in, DPoP proofs, refresh, transport |
 | Acceptance | 47 criteria | `npm run acceptance` | Which of §12 (and nineteen redesign criteria) the suites actually establish |
 | Client conformance | 18 checks | `npm run client-check` | That a compliant MCP client can find its way through |
@@ -26,7 +26,7 @@ does not.
 ```bash
 cd server
 npm install
-npm test                                   # 284
+npm test                                   # 286
 npm run test:pg                            # the same on PostgreSQL and Redis
 npm run typecheck
 npm run acceptance                         # the criteria map
@@ -82,6 +82,7 @@ request.
 | `observability.test.ts` | 5 | No token reaches a log line; refresh and DPoP counters; alerts; Prometheus format |
 | `split.test.ts` | 7 | Profile M over real mTLS: introspection, exchange, certificate-bound internal tokens, the allowlist, failing closed |
 | `split-processes.test.ts` | 1 | Profile M as four real processes on PostgreSQL and Redis |
+| `db-outage.test.ts` | 2 | A database that is down, or drops a connection, is a fast 503 and the pool recovers |
 
 ---
 
