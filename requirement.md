@@ -17,6 +17,8 @@ Version 1.0 was internally coherent but rested on host-platform facts that no lo
 5. **Domain gaps closed:** `normalizedName` added to Device, normalization folds defined, a complete error-code enum, a list ordering contract, a per-account device cap, and explicit no-op `updatedAt` behavior.
 6. **Sequencing changed.** §13 gains a step 0 feasibility spike so the host-dependent unknowns are settled before the native application is built.
 
+**Amended 2026-10-24 (host verification).** Claude and ChatGPT were run against the server on the web and on Android (`spike/FINDINGS.md`). ChatGPT's connector, once added on the web, works in its Android app, so ChatGPT is not web-only (§2, §10.3, AC-14, §14 decision 3). Neither host renders our auth card before the first connection; both start sign-in with their own Connect (§7.4, AC-13). Neither confirmed individual switch flips inside the card (§2).
+
 **Amended 2026-10-18 (authentication redesign, phase 3).** The iOS app no longer has credential fields. It signs in on the same hosted page as the AI hosts, through the system browser sheet, with tokens bound to a key in the Secure Enclave. §2, §5.2, §7.1 and §10.1 are revised to match; the design is in `docs/authentication-architecture/`.
 
 ## 1. Product objective
@@ -42,9 +44,9 @@ The following assumptions make this draft implementable. They are proposed defau
 | --- | --- |
 | Device behavior | Version 1 simulates devices in a database. No physical hardware connection. |
 | Main application | A native iOS application provides the complete device-control experience. |
-| External MCP clients | **Claude** — web, desktop, iOS, and Android — is the only target host that renders this integration on a phone. **ChatGPT** — web only; developer mode and custom MCP connectors are documented as available to Pro, Plus, Business, Enterprise, and Education accounts on the web, and connector setup cannot be completed in the ChatGPT mobile apps. *(verified)* |
+| External MCP clients | **Claude** — web, desktop, iOS, and Android. **ChatGPT** — developer mode and custom MCP connectors are documented as available to Pro, Plus, Business, Enterprise, and Education accounts; connector setup is done on the web, after which the connector works in the ChatGPT mobile app. *(observed 2026-10-24: Claude web and Android, ChatGPT Plus on the web and Android; iOS not yet observed)* |
 | Connector installation | In Claude, a custom connector must be added on web or desktop before it appears on mobile. In ChatGPT, developer-mode setup is performed on the web. No end-to-end flow begins on the phone. *(verified)* |
-| Host write approval | A host may require explicit user confirmation for every write tool call, and may re-prompt in each new conversation. ChatGPT documents this behavior for developer mode. Switch and add-device interactions must remain correct when each write is individually approved or declined. *(verified)* |
+| Host write approval | A host may require explicit user confirmation for every write tool call, and may re-prompt in each new conversation. ChatGPT documents this behavior for developer mode. Switch and add-device interactions must remain correct when each write is individually approved or declined. *(documented)* In practice neither host confirmed switch flips made inside the card: ChatGPT asked once, before first using the server, and Claude web did not ask. The server's write budgets are the per-write ceiling a person does not have to opt into. *(observed 2026-10-24)* |
 | User ownership | Each device belongs to exactly one account. No shared households or administrators. |
 | New device state | Every new device starts Off. |
 | Device names | Required; unique within the owner's account under the normalization fold defined in §4.2. |
@@ -389,7 +391,7 @@ Provide `ui://iot/auth.html` as a public MCP UI resource and `show_auth` as a pu
 
 Version 1.0 of this document defined a second presentation profile for "a first-party host under our control" that would render a complete username/password form inline. That profile is removed: §2.2 excludes a first-party host from version 1, so the profile described software that will not exist, and no requirement may depend on it.
 
-Connecting to an MCP server does not, by itself, guarantee that a host will render any custom UI. A host may show its own Connect prompt or open authorization before it renders an MCP App. Therefore:
+Connecting to an MCP server does not, by itself, guarantee that a host will render any custom UI. A host may show its own Connect prompt or open authorization before it renders an MCP App. Host verification (2026-10-24) found that both do exactly that before the first connection: Claude does not offer a disconnected connector's tools at all, public ones included, and shows its own "Connectors that could help — Connect" card instead; ChatGPT authorizes when the connector is set up. Neither rendered `show_auth` before connecting, and both reached our hosted page. Therefore:
 
 - An external host can render `show_auth` when the tool is invoked; the server must not promise unsolicited UI at connection time.
 - Sign Up / Log In actions must enter the host-supported authorization flow. Where no explicit connect action is exposed to the UI, call a protected, read-only tool — `list_devices` — to obtain the host's authentication challenge. Never initiate authentication by attempting a device mutation.
@@ -578,7 +580,7 @@ Accordingly:
 
 ### 10.3 External MCP host: first use
 
-1. **On web or desktop**, the user adds the connector — a custom connector in Claude, or a developer-mode MCP connector in ChatGPT. This step cannot be performed in either mobile app. In Claude the connector then becomes available on iOS and Android.
+1. **On web or desktop**, the user adds the connector — a custom connector in Claude, or a developer-mode MCP connector in ChatGPT. This step cannot be performed in either mobile app. In both hosts the connector then becomes available in the mobile apps (observed on Android for both).
 2. If the host permits anonymous discovery, public tools and static UI resources are available; no private data is returned.
 3. The host may invoke `show_auth`, or the first protected operation triggers the `401` authorization challenge of §7.5.
 4. The user sees the MCP authentication entry screen or the host's own Connect prompt.
@@ -626,8 +628,8 @@ Note that `get_auth_status` is public and returns `200` even when a token has ex
 | AC-10 | Concurrent control | A stale version is rejected with `DEVICE_VERSION_CONFLICT` and refreshed; no silent lost update. |
 | AC-11 | Ambiguous network outcome | UI reconciles through a read; no automatic inverse command or duplicate device. With `Idempotency-Key`, the replay returns the original device. |
 | AC-12 | Anonymous MCP connection | `initialize`, `tools/list`, public tools, and `ui://` resource reads succeed without a token and expose no private data. |
-| AC-13 | MCP authentication entry | `show_auth` renders Sign Up / Log In in Claude on web, desktop, and iOS, and selecting either reaches the host authorization flow. A host that never renders it remains fully usable through its own Connect prompt. |
-| AC-14 | External authorization | **Claude (iOS and web)** and **ChatGPT (web)** each complete username/password authorization on the hosted page and send scoped, audience-bound tokens to protected tools. ChatGPT on iOS is out of scope per §2 and must be recorded as not applicable, not as a failure. |
+| AC-13 | MCP authentication entry | Each host's own Connect affordance reaches the hosted authorization page, where Sign Up and Log In are both offered. Where a host renders `show_auth`, selecting either reaches the same flow; a host that never renders it, as neither did before the first connection, remains fully usable. |
+| AC-14 | External authorization | **Claude** and **ChatGPT** each complete username/password authorization on the hosted page and send scoped, audience-bound tokens to protected tools, on the web and in their mobile apps. Record the client, plan and app version for each. |
 | AC-15 | Credential isolation | Passwords/tokens are absent from tool schemas/results, model context, device HTML, analytics, and application logs. |
 | AC-16 | Expired authorization | Protected calls fail appropriately; reauthentication works; canceled login causes no mutation. |
 | AC-17 | MCP device UI | List, detail, add form, switches, refresh, loading, empty, and error states are functional. |
@@ -661,7 +663,7 @@ External-host acceptance must record the client app/version, account plan, enabl
 
 1. Confirm simulated devices for version 1, or identify the real hardware protocol if required.
 2. Confirm that the native iOS app and the external Claude/ChatGPT MCP UIs are all in scope.
-3. **Given that ChatGPT custom connectors are web-only, confirm whether ChatGPT remains a target at all, and if so that web-only coverage is acceptable.** If phone coverage in ChatGPT is mandatory, the integration cannot be delivered as specified and the requirement must change.
+3. ~~Given that ChatGPT custom connectors are web-only, confirm whether ChatGPT remains a target at all.~~ **Resolved 2026-10-24:** a ChatGPT connector added on the web works in the ChatGPT Android app, so ChatGPT remains a target on the web and on the phone (`spike/FINDINGS.md`, Q5).
 4. Confirm that credential entry on our hosted authorization page, rather than inline in a host's UI, satisfies the sign-up/log-in requirement. Version 1.0 left open the possibility of a first-party host guaranteeing an inline form; §2.2 excludes building one in version 1.
 5. Confirm the device cap of 100 per account and the session lifetimes proposed in §7.1.
 

@@ -135,8 +135,9 @@ export const CRITERIA: Criterion[] = [
       'the presentation tools are public and link their views',
       'the auth view contains no credential fields'
     ],
-    gap: 'Whether a host renders show_auth at all, and whether an app-initiated '
-      + 'tool call raises its Connect prompt. FINDINGS Q1.'
+    gap: 'Observed 24 Oct on Claude and ChatGPT, web and Android: each host\'s own '
+      + 'Connect reaches the hosted page; neither rendered show_auth before connecting. '
+      + 'Claude on iPhone not yet observed. FINDINGS Q1.'
   },
   {
     id: 'AC-14', scenario: 'External authorization',
@@ -144,8 +145,8 @@ export const CRITERIA: Criterion[] = [
       'a full authorization issues a token bound to this resource',
       'authorization server metadata advertises what hosts gate on'
     ],
-    gap: 'Claude and ChatGPT completing the flow against this server, with the '
-      + 'client, version, plan and capabilities recorded. FINDINGS Q6.'
+    gap: 'Completed 24 Oct by Claude and ChatGPT (Plus), both by CIMD, tokens for '
+      + 'the right resource; app versions not recorded, iPhone not yet. FINDINGS Q6.'
   },
   {
     id: 'AC-15', scenario: 'Credential isolation',
@@ -172,7 +173,8 @@ export const CRITERIA: Criterion[] = [
       'every view declares the exact MCP Apps content type',
       'a version conflict explains itself with what the device actually is'
     ],
-    gap: 'Whether a host actually renders them, and how they behave on a phone.'
+    gap: 'Rendered and usable on Claude and ChatGPT, web and Android (24 Oct), after '
+      + 'two view fixes found there. Claude on iPhone not yet observed. FINDINGS Q3, Q5.'
   },
   {
     id: 'AC-18', scenario: 'Text fallback',
@@ -241,14 +243,15 @@ export const CRITERIA: Criterion[] = [
   {
     id: 'AC-27', scenario: 'Host write approval',
     evidence: [],
-    gap: 'Whether a host confirms every write, and whether it remembers. '
-      + 'ChatGPT documents per-write confirmation. FINDINGS Q4.'
+    gap: 'Observed 24 Oct: neither host confirmed switch flips inside the card; '
+      + 'ChatGPT asked once before first use. Re-prompting in a new conversation '
+      + 'not yet observed. FINDINGS Q4.'
   },
   {
     id: 'AC-28', scenario: 'Inline presentation',
     evidence: ['the device list bounds what it renders inline and can ask for more'],
-    gap: 'How many rows actually survive an inline card on a phone. The budget '
-      + 'is currently published guidance, not a measurement. FINDINGS Q2.'
+    gap: 'Four rows left room to spare on Claude web (24 Oct). No phone '
+      + 'measurement yet, so the budget is still published guidance. FINDINGS Q2.'
   },
 
   // Beyond section 12: criteria added by Authentication Architecture v2

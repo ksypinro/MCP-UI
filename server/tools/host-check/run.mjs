@@ -122,8 +122,8 @@ process.stdout.write(`
             there before it appears on mobile. Then open that same
             conversation on your iPhone.
 
-  ChatGPT   Settings > Connectors > Advanced > Developer mode.
-            Web only.
+  ChatGPT   Settings > Apps & Connectors > Advanced > Developer mode.
+            Set up on the web; it then works in the mobile app too.
 
   Then, in a conversation:
 
@@ -131,9 +131,10 @@ process.stdout.write(`
     "Show my devices"            Q2  how many rows fit before it clips?
                                  Q3  does "Show all" go fullscreen?
     toggle a switch              Q4  is every write confirmed?
-    open the same chat on iOS    Q5  does any of it reach the phone?
+    open the same chat on a phone Q5 does any of it reach the phone?
 
   Record what you see in spike/FINDINGS.md. Screenshots beat recollection.
+  UI_DIAGNOSTICS=1 adds a panel to the device list showing what the host sent.
   Ctrl-C to stop.
 
 `);

@@ -56,11 +56,17 @@ const CIMD_MAX_BYTES = 5 * 1024;
 
 /**
  * CIMD client_ids we recognise by URL, shown as verified on the consent
- * screen. Comma-separated KNOWN_CLIENTS overrides the default. Claude's CIMD
- * URL is added once host-check has confirmed it.
+ * screen. Comma-separated KNOWN_CLIENTS overrides the default. Both are the
+ * client_ids the hosts actually presented in host verification on
+ * 24 Oct 2026 (spike/FINDINGS.md, Q6).
  */
+export const DEFAULT_KNOWN_CLIENTS = [
+  'https://claude.ai/oauth/mcp-oauth-client-metadata',
+  'https://chatgpt.com/oauth/client.json'
+];
+
 export function knownClients(): Set<string> {
-  const configured = process.env.KNOWN_CLIENTS ?? 'https://chatgpt.com/oauth/client.json';
+  const configured = process.env.KNOWN_CLIENTS ?? DEFAULT_KNOWN_CLIENTS.join(',');
   return new Set(configured.split(',').map((entry) => entry.trim()).filter(Boolean));
 }
 
