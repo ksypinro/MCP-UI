@@ -10,7 +10,7 @@ import test from 'node:test';
 import { once } from 'node:events';
 import assert from 'node:assert/strict';
 import { createDb } from '../src/db/index.ts';
-import { pinnedLookup, resolveClient } from '../src/oauth/clients.ts';
+import { knownClients, pinnedLookup, resolveClient } from '../src/oauth/clients.ts';
 
 test('a client_id that is not a URL and not registered resolves to nothing', async () => {
   const db = await createDb();
@@ -196,4 +196,17 @@ test('dynamic registration refuses anything it cannot accept in full', async () 
   assert.equal(resolved?.kind, 'dcr');
   assert.equal(resolved?.trust, 'unverified');
   await db.close();
+});
+
+test('Claude and ChatGPT are known by the client_ids they presented in host verification', () => {
+  const saved = process.env.KNOWN_CLIENTS;
+  delete process.env.KNOWN_CLIENTS;
+  try {
+    const known = knownClients();
+    assert.ok(known.has('https://claude.ai/oauth/mcp-oauth-client-metadata'));
+    assert.ok(known.has('https://chatgpt.com/oauth/client.json'));
+    assert.equal(known.size, 2);
+  } finally {
+    if (saved !== undefined) process.env.KNOWN_CLIENTS = saved;
+  }
 });

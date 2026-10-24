@@ -1,8 +1,9 @@
-# Phase 0 findings
+# Host verification findings
 
-**Status: not yet run against a host.**
+**Status: run on 24 October 2026 against Claude web, Claude Android, ChatGPT
+web and the ChatGPT Android app. Not yet run on iPhone (Claude iOS).**
 
-**Start here:**
+**To repeat it:**
 
 ```bash
 cd ../server && npm run host-check
@@ -10,140 +11,172 @@ cd ../server && npm run host-check
 
 That opens a tunnel, starts the server told the origin it is reachable at,
 verifies the whole discovery chain over real HTTPS, and prints the connector
-URL with what to look for. Everything that can fail without a host will have
-failed before you involve one, so what is left is exactly these questions.
+URL. Everything that can fail without a host will have failed before you
+involve one. Setting `UI_DIAGNOSTICS=1` adds a panel to the device list
+showing the build, a random id for that copy of the view, and the names of the
+messages the host sent it: that is how Q3 below was diagnosed rather than
+guessed.
 
-All six now run against `../server`: phase 5 gave it the `ui://` views, which
-were the only reason two of them still needed the spike. The spike's own
-backend is superseded entirely — see [README.md](./README.md).
+The server starts with no devices. Ask the assistant to add six ("Add 6 devices
+named Lamp 1 to Lamp 6") so the list has more rows than the inline card shows.
 
-Everything below requires a human with a Claude account, a ChatGPT account on a
-paid plan, and an iPhone. Nothing here may be filled in from expectation — only from
-observation. An unanswered question is a better outcome than a guessed one.
+Nothing here may be filled in from expectation, only from observation. An
+unanswered question is a better outcome than a guessed one: cells marked
+*not recorded* were not observed.
 
-Record for each host: app version, account plan, and test date. Section 12 of
-`../requirement.md` requires that provenance, and a finding without it cannot
-be acted on six weeks later.
+## Provenance
+
+| | |
+| --- | --- |
+| Date | 24 October 2026 |
+| Server | `main` at `b07a722`, then `fix/views-fullscreen-on-claude-web` (PR #18) for the Q3 re-test |
+| Tunnel | ngrok, a fixed free domain |
+| Claude | An organisation account (the connector was "in your org"); Team or Enterprise *not recorded*. Web, and the Android app; app versions *not recorded* |
+| ChatGPT | Plus. Web, and the Android app; app version *not recorded* |
+| Phone | Android; version *not recorded* |
+| iPhone | Not used |
 
 ---
 
-## Q1 — Does an app-initiated tool call raise the host's Connect prompt?
+## Q1 — How does signing in start?
 
-The whole authentication design assumes yes: the auth card calls `list_devices`,
-the server answers `401`, and the host runs OAuth and retries. The MCP Apps
-authorization guidance says the host "handles it transparently", but that text
-describes the protocol, not any particular host's UI.
+The design assumed a host would render our `show_auth` card while signed out,
+and that pressing Log In on it would raise the host's Connect prompt.
 
-*How:* connect while signed out, ask the assistant to sign in to IoT Switch, and
-press **Log In** on the card. Watch the bridge log in the card.
-
-| Host | Connect prompt appeared? | Call retried after auth? | Notes |
+| Host | Our auth card rendered before connecting? | What started sign-in | Notes |
 | --- | --- | --- | --- |
-| Claude web | | | |
-| Claude iOS | | | |
-| ChatGPT web | | | |
+| Claude web | **No** | Claude's own card: "Connectors that could help — IoT Switch — **Connect**". Pressing it opened our hosted page in the browser | While disconnected, Claude does not offer the server's tools at all, public ones included, so `show_auth` cannot be called |
+| ChatGPT web | **No** | Connector setup: ChatGPT connects (OAuth) when the connector is added, and opened our hosted page in the browser for Log In | The connector is created without authentication, then authorized on first connection |
 
-**If no:** section 7.4 needs rewriting. The fallback is that only a
-model-initiated call can trigger authentication, which makes the auth card
-decorative and the honest entry point a sentence of instruction to the user.
+**Finding:** neither host uses an in-chat sign-in card of ours before the
+first connection. Both route the person to our hosted page through their own
+Connect affordance, which is the required path in §7.4 and works. The auth card
+is decorative before connection on both hosts. *Whether the card's own Log In
+raises a Connect prompt after a connection has lapsed: not recorded.*
 
 ---
 
 ## Q2 — How much of a device list survives an inline card?
 
-Twelve devices are seeded deliberately. The card's diagnostics panel reports
-content height against viewport height and prints how many pixels are cut off.
+The device list shows four rows inline (`INLINE_ROW_BUDGET`, published
+guidance), then "N more devices not shown here" and **Show all**.
 
-| Host | Viewport | Content | Rows reachable | Inline scroll works? |
-| --- | --- | --- | --- | --- |
-| Claude web | | | | |
-| Claude iOS | | | | |
-| ChatGPT web | | | | |
+| Host | Rows shown inline | Room for more? | Notes |
+| --- | --- | --- | --- |
+| Claude web | 4 | **Yes**: empty space below the four rows | The budget is cautious on a desktop browser |
+| Claude Android | 4 | *not recorded* | |
+| ChatGPT web | 4 | *not recorded* | |
+| ChatGPT Android | 4 | *not recorded* | |
 
-On a phone the conversation is expected to own vertical scrolling, so a pan
-starting inside the card scrolls the chat instead of the list.
-
-**If rows are unreachable:** section 9.3's requirement stands and `devices.html`
-must ship as a bounded summary that escalates to fullscreen. Record the number
-of rows that *do* fit — that is the real design budget, and it should be written
-into the spec rather than guessed.
+**Finding:** four is conservative on the web. A phone is where the budget
+binds, and no phone measurement was taken, so the budget stays at four until
+one is. `UI_DIAGNOSTICS=1` reports window and content height for that.
 
 ---
 
-## Q3 — Does `ui/request-display-mode: fullscreen` work?
+## Q3 — Does fullscreen work?
 
-Press **Request fullscreen** on the card.
-
-| Host | Granted? | Usable on a phone? | Close returns to conversation? |
+| Host | Fullscreen granted? | All six devices shown? | Notes |
 | --- | --- | --- | --- |
-| Claude web | | | |
-| Claude iOS | | | |
-| ChatGPT web | | | |
+| Claude web | Yes | **No, then yes after the fix** | Fullscreen frame with its own header and close button, but the card still listed four and offered Show all again |
+| Claude Android | Yes | Yes | Worked before the fix |
+| ChatGPT web | Yes | Yes | Worked before the fix |
+| ChatGPT Android | Yes | **No, then yes after the fix** | Same symptom as Claude web |
 
-**If refused on mobile:** Q2's fallback disappears with it, and the device list
-inside a host becomes a genuinely constrained surface. Say so in the spec rather
-than designing around a capability that is not there.
+**Two defects in our view, both fixed (PR #18):**
+
+1. The bridge ignored the host's answer to `ui/request-display-mode`, which
+   is the mode actually set, and replaced its whole host context with each
+   `host-context-changed`, although that notification carries only the fields
+   that changed. So a host that reported fullscreen in the reply, or sent a
+   later update without the display mode, left the card thinking it was
+   inline. The hosts where it worked happened to send everything at once.
+2. Hosts cache view templates by URI, across a disconnect and reconnect. The
+   first fix was invisible on Claude web until every view URI carried a hash
+   of its content (`ui://iot/devices.e824b396.html`). Any change to a view
+   would otherwise never reach a host.
+
+With both fixes, all six devices showed in fullscreen on Claude web and on
+the ChatGPT Android app. *Whether closing fullscreen returns to the
+conversation: not recorded.*
 
 ---
 
 ## Q4 — What approval does a write require?
 
-Toggle a switch in the card.
+| Host | Before using the server | Switch flipped in the card | Notes |
+| --- | --- | --- | --- |
+| Claude web | *not recorded* | **No confirmation**: the device changed from Off to On at once | |
+| Claude Android | *not recorded* | No confirmation observed; the switch worked | |
+| ChatGPT web and Android | **Asked once**, before it first used the MCP server | **No confirmation** for interactions inside the card | ChatGPT documents per-write confirmation for developer mode; that was not what happened for in-card actions |
 
-| Host | Prompt per write? | Remembered within a conversation? | Across conversations? | Time added |
-| --- | --- | --- | --- | --- |
-| Claude web | | | | |
-| Claude iOS | | | | |
-| ChatGPT web | | | | |
-
-ChatGPT documents that write actions require confirmation by default and that
-new conversations prompt again.
-
-**If every flip needs a confirmation:** a switch is the wrong control for that
-host. Consider an explicit Apply button so one approval covers one intended
-change, and record the latency the prompt adds — section 11's 200 ms target
-measures our own pending indicator, not the human in the loop.
+**Finding:** in practice neither host confirmed individual switch flips from
+inside the card. The server's write budgets (`WRITE_BUDGETS`) are therefore
+the only per-write ceiling a person did not have to opt into, which is what
+they were built for. *Whether ChatGPT asks again in a new conversation, and
+whether either host confirms model-initiated writes ("add a device"): not
+recorded.*
 
 ---
 
-## Q5 — Does the connector reach the phone at all?
+## Q5 — Does the connector reach the phone?
 
 | Question | Claude | ChatGPT |
 | --- | --- | --- |
-| Added on web/desktop, visible on iOS? | | |
-| Does the MCP App render on iOS? | | |
-| Anything degraded versus web? | | |
+| Added on the web, then usable in the Android app? | Yes | **Yes** |
+| Does the device card render on the phone? | Yes | Yes |
+| Switches work on the phone? | Yes | Yes |
+| Anything degraded versus the web? | No | Show all (Q3), fixed |
+| iPhone | Not tested | Not tested |
 
-Expected: Claude yes, ChatGPT no. If ChatGPT surprises us, section 2 of the spec
-and decision 3 in section 14 both change.
+**Finding:** the spec expected ChatGPT custom connectors to be web-only. Setup
+is web-only, but once added the connector worked in the ChatGPT Android app.
+§2, §10.3, AC-14 and §14 decision 3 are corrected accordingly.
 
 ---
 
-## Q6 — Does OAuth complete from each surface?
+## Q6 — Does OAuth complete, and how does each host register?
 
-| Host | Registration used | Flow completed | Token audience correct | Notes |
-| --- | --- | --- | --- | --- |
-| Claude web | CIMD / DCR / pre-reg | | | |
-| Claude iOS | | | | |
-| ChatGPT web | | | | |
+Read from the server's database after the session, not from the screen.
 
-Watch the server log for which `client_id` arrives: an HTTPS URL means CIMD, a
-`client_*` value means the host fell back to dynamic registration.
+| Host | Registration used | client_id | Flow completed | Token audience correct | Notes |
+| --- | --- | --- | --- | --- | --- |
+| Claude | **CIMD** | `https://claude.ai/oauth/mcp-oauth-client-metadata` | Yes | Yes (`…/mcp`) | Two grants: one used once at 19:26, then a second at 19:33. Probably a second Connect; harmless, and both are listed on the connected-apps page |
+| ChatGPT | **CIMD** | `https://chatgpt.com/oauth/client.json` | Yes | Yes (`…/mcp`) | Shown as **Verified** on the consent page |
+
+Both hosts requested and received all three device scopes. Neither fell back to
+dynamic registration. One account (`hosttest`) worked across both hosts: six
+devices added through Claude, switched from both, and every change audited
+with the right client.
+
+Claude appeared as **Unverified** on the consent page, because only ChatGPT's
+client_id was on the known list. Claude's is now in the default
+`KNOWN_CLIENTS`.
 
 ---
 
 ## Anything unexpected
 
-Host bugs, confusing copy, surprising ordering, anything that cost time. This
-section is usually the most valuable one and is usually left empty.
+- **Stale views.** Hosts kept running an old copy of a view across a
+  disconnect and reconnect. Fixed by fingerprinting view URIs (Q3).
+- **Each host started sign-in its own way,** and neither the way §7.4
+  pictured (Q1).
+- **ChatGPT on the phone.** Out of scope on paper, working in practice (Q5).
+- **No per-write prompts** for in-card switches on either host (Q4).
 
 ---
 
 ## Decision
 
-Once Q1–Q6 are answered, resolve these before phase 1 starts:
-
-- [ ] Does ChatGPT stay in scope? (spec section 14, decision 3)
-- [ ] Does `devices.html` ship inline-summary-plus-fullscreen, or fullscreen only?
-- [ ] Does the auth card stay, or does section 7.4 lose it?
-- [ ] Do any acceptance criteria in section 12 need rewriting?
+- [x] **Does ChatGPT stay in scope?** Yes. Its connector works on the web and
+  in the Android app (spec §14 decision 3, resolved).
+- [x] **Does `devices.html` ship inline summary plus fullscreen?** Yes. With
+  PR #18, fullscreen showed the whole list on all four surfaces tested.
+- [x] **Does the auth card stay?** It stays as the cosmetic entry point §7.4
+  already calls it, but neither host renders it before connecting. The
+  required path is the host's own Connect, which works on both.
+- [x] **Do any acceptance criteria need rewriting?** AC-13 and AC-14, done.
+  AC-17, AC-27 and AC-28 now record what was observed and what remains.
+- [ ] **Still open:** Claude on iPhone (AC-13, AC-17, AC-19), a phone
+  measurement of the inline row budget (AC-28), and whether hosts re-prompt in
+  new conversations (AC-27).

@@ -198,7 +198,7 @@ are deprecated.
 | `MCP_BASE_URL` | `BASE_URL` | The MCP endpoint's origin: `/mcp` here is the RFC 8707 resource and the token audience |
 | `API_BASE_URL` | `BASE_URL` | The REST API's origin. With three distinct origins each surface answers only on its own host |
 | `TOKEN_PEPPERS`, `PASSWORD_PEPPER`, `INTERNAL_MAC_KEY` | a key file | Key material, all three or none. Unset, the server keeps `keys.json` beside the database. **Back it up: losing it makes every stored password unverifiable** |
-| `KNOWN_CLIENTS` | ChatGPT's CIMD URL | Metadata-document clients shown as verified on the consent screen |
+| `KNOWN_CLIENTS` | Claude's and ChatGPT's CIMD URLs | Metadata-document clients shown as verified on the consent screen |
 | `REQUIRE_OFFLINE_ACCESS_FOR_REFRESH` | `false` | Issue refresh tokens only to clients that ask for `offline_access` |
 | `ARGON2_MEMORY_KIB`, `ARGON2_TIME_COST` | `65536`, `3` | Password hashing cost |
 | `SIGNING_KEYS` | the key file | JSON array of private P-256 JWKs, current first, that sign internal tokens. Published at `/.well-known/jwks.json` |
