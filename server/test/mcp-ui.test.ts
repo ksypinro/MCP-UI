@@ -5,11 +5,11 @@
 
 import test, { after, before } from 'node:test';
 import assert from 'node:assert/strict';
-import { uiResources } from '../src/mcp/ui/index.ts';
+import { ADD_DEVICE_URI, AUTH_URI, DEVICES_URI, DEVICE_URI, uiResources } from '../src/mcp/ui/index.ts';
 
-/** Exact, because 'ui://iot/add-device.html' also ends with 'device.html'. */
+/** By name, because 'add-device' also ends with 'device'. */
 function view(name: 'auth' | 'devices' | 'device' | 'add-device') {
-  const found = uiResources().find((resource) => resource.uri === `ui://iot/${name}.html`);
+  const found = uiResources().find((resource) => resource.name === name);
   if (!found) throw new Error(`no view named ${name}`);
   return found;
 }
@@ -30,9 +30,16 @@ test('the four views are discoverable without a token', async () => {
   assert.equal(response.status, 200);
 
   const uris = response.body.result.resources.map((r: { uri: string }) => r.uri).sort();
-  assert.deepEqual(uris, [
-    'ui://iot/add-device.html', 'ui://iot/auth.html', 'ui://iot/device.html', 'ui://iot/devices.html'
-  ]);
+  assert.deepEqual(uris, [ADD_DEVICE_URI, AUTH_URI, DEVICE_URI, DEVICES_URI].sort());
+});
+
+test('each view address carries a fingerprint of its content', () => {
+  // Hosts cache templates by URI across reconnects, so changed code must be
+  // a new URI or a host keeps running the old one. Found on Claude web.
+  for (const resource of uiResources()) {
+    assert.match(resource.uri, new RegExp(`^ui://iot/${resource.name}\\.[0-9a-f]{8}\\.html$`));
+  }
+  assert.equal(new Set(uiResources().map((resource) => resource.uri)).size, 4);
 });
 
 test('every view declares the exact MCP Apps content type', async () => {
@@ -45,7 +52,7 @@ test('every view declares the exact MCP Apps content type', async () => {
 });
 
 test('a view can be read anonymously, before anyone has signed in', async () => {
-  const response = await readResource('ui://iot/auth.html');
+  const response = await readResource(AUTH_URI);
   assert.equal(response.status, 200);
   const content = response.body.result.contents[0];
   assert.equal(content.mimeType, 'text/html;profile=mcp-app');
@@ -101,11 +108,11 @@ test('no view can hold a token, and none renders user data as markup', () => {
 test('the templates are identical for everyone', async () => {
   // Hosts cache these globally, by URL. Anything account-specific compiled
   // into one would be served to the next person who opens it.
-  const anonymous = (await readResource('ui://iot/devices.html')).body.result.contents[0].text;
+  const anonymous = (await readResource(DEVICES_URI)).body.result.contents[0].text;
 
   const owner = await tokenFor(h);
   await callTool(h.base, 'add_device', { name: 'Bedroom Lamp' }, owner.accessToken);
-  const authenticated = (await readResource('ui://iot/devices.html', owner.accessToken))
+  const authenticated = (await readResource(DEVICES_URI, owner.accessToken))
     .body.result.contents[0].text;
 
   assert.equal(anonymous, authenticated);
@@ -118,8 +125,8 @@ test('the presentation tools are public and link their views', async () => {
   const tools: any[] = (await toolsList(h.base)).body.result.tools;
   const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
-  assert.equal(byName.show_auth._meta.ui.resourceUri, 'ui://iot/auth.html');
-  assert.equal(byName.show_add_device._meta.ui.resourceUri, 'ui://iot/add-device.html');
+  assert.equal(byName.show_auth._meta.ui.resourceUri, AUTH_URI);
+  assert.equal(byName.show_add_device._meta.ui.resourceUri, ADD_DEVICE_URI);
 
   // Public: a card that exists to get someone signed in cannot itself require
   // being signed in.
@@ -131,8 +138,8 @@ test('the reading tools link the views that render their results', async () => {
   const tools: any[] = (await toolsList(h.base)).body.result.tools;
   const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
 
-  assert.equal(byName.list_devices._meta.ui.resourceUri, 'ui://iot/devices.html');
-  assert.equal(byName.get_device._meta.ui.resourceUri, 'ui://iot/device.html');
+  assert.equal(byName.list_devices._meta.ui.resourceUri, DEVICES_URI);
+  assert.equal(byName.get_device._meta.ui.resourceUri, DEVICE_URI);
 });
 
 test('every UI tool also carries the ChatGPT alias', async () => {
