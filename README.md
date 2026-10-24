@@ -28,7 +28,7 @@ graph LR
 | [`requirement.md`](./requirement.md) | The specification everything implements |
 | [`docs/`](./docs) | Architecture, code flow, sequence diagrams, testing |
 
-Roughly 21,800 lines, 344 tests.
+Roughly 21,900 lines, 346 tests.
 
 ---
 
@@ -41,7 +41,7 @@ Xcode 16+ only if you want the iOS app, which runs on iOS 18 and later.
 cd server
 npm install
 npm start            # http://localhost:4000
-npm test             # 284 tests
+npm test             # 286 tests
 ```
 
 Nothing to provision. The store is [PGlite](https://pglite.dev) — real
@@ -225,10 +225,11 @@ are deprecated.
 
 ## Status
 
-344 tests pass (284 server, 60 iOS). On PGlite with in-memory stores,
-`npm run acceptance` reports **30 of 47** acceptance criteria proven, 14
-partial, 3 open; the four that need PostgreSQL or Redis say so and are proven
-by CI's PostgreSQL leg. Nineteen of the forty-seven (AC-29 to AC-47) come from the
+346 tests pass (286 server, 60 iOS). Run on PostgreSQL and Redis,
+`npm run acceptance` reports **34 of 47** acceptance criteria proven, 10
+partial, 3 open; on PGlite alone the criteria that need the real backends say
+so instead. The phase 4 exit review — load and failover drills — is recorded in
+the [implementation plan](./docs/authentication-architecture/implementation-plan.md). Nineteen of the forty-seven (AC-29 to AC-47) come from the
 [authentication redesign](./docs/authentication-architecture/authentication-architecture.md)
 rather than the specification.
 

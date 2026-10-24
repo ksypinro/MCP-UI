@@ -106,7 +106,7 @@ server/
     oauth/              OAuth 2.1 authorization server
     mcp/                MCP adapter: gate, tools, resources
       ui/assets/        the four views, plus the shared bridge and stylesheet
-  test/                 284 tests
+  test/                 286 tests
   acceptance/           criteria mapped to the tests that establish them
   tools/                dev harnesses: mock-host, host-check, client-check
 
