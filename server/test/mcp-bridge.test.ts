@@ -74,11 +74,11 @@ test('the bridge exposes an app once evaluated', () => {
 });
 
 test('several handlers can listen to one notification', () => {
-  // This is the bug that made "Show all" appear to do nothing: registering a
-  // handler used to overwrite, so a view listening for host-context-changed
-  // silently replaced the bridge's own handling of it. The bridge never
-  // learned the display mode had changed, and the view was granted fullscreen
-  // and then rendered as if it were still inline.
+  // If registering a handler overwrote the previous one, a view listening for
+  // host-context-changed would silently replace the bridge's own handling of
+  // it. The bridge would never learn the display mode had changed, and a view
+  // granted fullscreen would render as if it were still inline: "Show all"
+  // would appear to do nothing.
   const { app, deliver } = loadBridge();
   const calls: string[] = [];
 
@@ -275,10 +275,10 @@ test('a notification whose params are not an object is dropped', () => {
 });
 
 test('a partial host-context update keeps the display mode it does not mention', () => {
-  // Found on Claude web: fullscreen was granted, then a context update
-  // carrying only new dimensions replaced the whole context, and the list
-  // went back to four rows. Updates carry only changed fields (MCP Apps
-  // 2026-01-26), so they are merged.
+  // Claude web grants fullscreen, then sends a context update carrying only
+  // new dimensions. Updates carry only changed fields (MCP Apps 2026-01-26),
+  // so they are merged: replacing the whole context would send the list back
+  // to four rows.
   const { app, deliver } = loadBridge();
   deliver({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { displayMode: 'fullscreen' } });
   deliver({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { containerDimensions: { width: 800 } } });

@@ -1,13 +1,13 @@
 /**
- * The tool policy table and write budgets. Plan 2.6 and 2.7.
+ * The tool policy table and write budgets.
  */
 
 import test, { after, afterEach, before } from 'node:test';
 import assert from 'node:assert/strict';
 import { TOOL_POLICY } from '../src/mcp/policy.ts';
-import { startSession } from '../src/domain/sessions.ts';
 import { createAccount } from '../src/domain/accounts.ts';
 import { startServer, type Harness } from './oauth-helpers.ts';
+import { appClientFor } from './app-helpers.ts';
 import { callTool, errorCode, nextId, rpc, structured, tokenFor } from './mcp-helpers.ts';
 
 let h: Harness;
@@ -42,8 +42,7 @@ async function flip(token: string, device: { id: string; version: number }, time
   return codes;
 }
 
-test('switching one device more than six times a minute is refused when enforced', async () => {
-  process.env.WRITE_BUDGETS = 'enforce';
+test('switching one device more than six times a minute is refused', async () => {
   const { accessToken } = await tokenFor(h);
   const device = await deviceFor(accessToken);
   const codes = await flip(accessToken, device, 7);
@@ -51,8 +50,7 @@ test('switching one device more than six times a minute is refused when enforced
   assert.equal(codes[6], 'RATE_LIMITED', 'a tool error the model can read, not a transport 429');
 });
 
-test('more than twenty changes a minute across devices is refused when enforced', async () => {
-  process.env.WRITE_BUDGETS = 'enforce';
+test('more than twenty changes a minute across devices is refused', async () => {
   const { accessToken } = await tokenFor(h);
   const codes: (string | undefined)[] = [];
   for (let index = 0; index < 4; index++) codes.push(...await flip(accessToken, await deviceFor(accessToken), 6));
@@ -60,13 +58,13 @@ test('more than twenty changes a minute across devices is refused when enforced'
 });
 
 test('in report mode an over-budget change is allowed', async () => {
+  process.env.WRITE_BUDGETS = 'report';
   const { accessToken } = await tokenFor(h);
   const codes = await flip(accessToken, await deviceFor(accessToken), 8);
   assert.ok(codes.every((code) => code === undefined));
 });
 
 test('budgets are per grant: another client of the same person keeps its own', async () => {
-  process.env.WRITE_BUDGETS = 'enforce';
   const { accessToken, username } = await tokenFor(h);
   for (let index = 0; index < 4; index++) await flip(accessToken, await deviceFor(accessToken), 6);
   assert.equal(
@@ -76,31 +74,26 @@ test('budgets are per grant: another client of the same person keeps its own', a
 
   // The same person, through the iOS app: a different grant, a fresh budget.
   const { rows } = await h.db.query<{ id: string }>('SELECT id FROM accounts WHERE username = $1', [username]);
-  const session = await startSession(h.db, rows[0]!.id);
-  const headers = { authorization: `Bearer ${session.accessToken}`, 'content-type': 'application/json' };
-  const created = await fetch(`${h.base}/v1/devices`, { method: 'POST', headers, body: JSON.stringify({ name: 'From the app' }) })
-    .then((r) => r.json()) as { device: { id: string; version: number } };
-  const switched = await fetch(`${h.base}/v1/devices/${created.device.id}/state`, {
-    method: 'PUT', headers, body: JSON.stringify({ state: 'on', expectedVersion: created.device.version })
+  const app = await appClientFor(h.db, h.base, rows[0]!.id);
+  const created = (await app.call('POST', '/v1/devices', { body: { name: 'From the app' } })).body as { device: { id: string; version: number } };
+  const switched = await app.call('PUT', `/v1/devices/${created.device.id}/state`, {
+    body: { state: 'on', expectedVersion: created.device.version }
   });
   assert.equal(switched.status, 200);
 });
 
 test('the REST API refuses an over-budget change with 429 and Retry-After', async () => {
-  process.env.WRITE_BUDGETS = 'enforce';
   const account = await createAccount(h.db, `rest${Date.now()}`, 'correct horse battery staple');
-  const { accessToken } = await startSession(h.db, account.id);
-  const headers = { authorization: `Bearer ${accessToken}`, 'content-type': 'application/json' };
-  const device = await fetch(`${h.base}/v1/devices`, { method: 'POST', headers, body: JSON.stringify({ name: 'Rest Lamp' }) })
-    .then((r) => r.json()) as { device: { id: string; version: number } };
+  const app = await appClientFor(h.db, h.base, account.id);
+  const device = (await app.call('POST', '/v1/devices', { body: { name: 'Rest Lamp' } })).body as { device: { id: string; version: number } };
 
   let version = device.device.version;
-  let last: Response | null = null;
+  let last = null;
   for (let index = 0; index < 7; index++) {
-    last = await fetch(`${h.base}/v1/devices/${device.device.id}/state`, {
-      method: 'PUT', headers, body: JSON.stringify({ state: index % 2 === 0 ? 'on' : 'off', expectedVersion: version })
+    last = await app.call('PUT', `/v1/devices/${device.device.id}/state`, {
+      body: { state: index % 2 === 0 ? 'on' : 'off', expectedVersion: version }
     });
-    if (last.status === 200) version = ((await last.json()) as { device: { version: number } }).device.version;
+    if (last.status === 200) version = last.body.device.version;
   }
   assert.equal(last?.status, 429);
   assert.ok(Number(last?.headers.get('retry-after')) > 0);

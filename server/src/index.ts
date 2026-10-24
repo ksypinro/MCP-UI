@@ -5,7 +5,6 @@
 
 import { createDb } from './db/index.ts';
 import { createApp } from './http/app.ts';
-import { pruneExpired } from './domain/sessions.ts';
 import { pruneExpiredOAuth } from './oauth/store.ts';
 import { DATABASE_PATH, PORT } from './config.ts';
 import { infrastructureFromEnvironment } from './stores/index.ts';
@@ -28,10 +27,10 @@ const server = createApp(db, infra).listen(PORT, () => {
   });
 });
 
-// Expired sessions and access tokens are on the hot path of every protected
-// request, so they are swept rather than left to accumulate with uptime.
+// Expired tokens, codes and pending authorizations are on the hot path of
+// every protected request, so they are swept rather than left to accumulate.
 const sweep = setInterval(() => {
-  void Promise.all([pruneExpired(db), pruneExpiredOAuth(db)]).catch((error) => {
+  void pruneExpiredOAuth(db).catch((error) => {
     log('error', 'prune_failed', { error });
   });
 }, 60 * 60 * 1000);

@@ -1,5 +1,5 @@
 /**
- * Connected apps, sign out everywhere, and password change. Plan 4.6, AC-46.
+ * Connected apps, sign out everywhere, and password change. AC-46.
  */
 
 import test, { after, before } from 'node:test';
@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 import { establishGrant } from '../src/oauth/store.ts';
 import { API_RESOURCE, FIRST_PARTY_CLIENT_ID } from '../src/oauth/config.ts';
 import { verifyOAuthAccessToken } from '../src/oauth/verify.ts';
-import { startSession, verifyAccessToken } from '../src/domain/sessions.ts';
 import { verifyCredentials } from '../src/domain/accounts.ts';
 import { Browser, csrfFrom, startServer, type Harness } from './oauth-helpers.ts';
 import { callTool, tokenFor, tokenForExisting } from './mcp-helpers.ts';
@@ -23,7 +22,7 @@ async function accountIdOf(username: string): Promise<string> {
   return rows[0]!.id;
 }
 
-/** A person with two host grants, the iPhone app's grant and a legacy session, signed in on /account. */
+/** A person with two host grants and the iPhone app's grant, signed in on /account. */
 async function personWithApps() {
   const first = await tokenFor(h, { scope: 'devices:read devices:control' });
   const second = await tokenForExisting(h, first.username, 'devices:read');
@@ -32,13 +31,12 @@ async function personWithApps() {
     code: 'none', accountId, clientId: FIRST_PARTY_CLIENT_ID, resource: API_RESOURCE,
     scope: 'devices:read devices:control devices:create offline_access', withRefresh: true, dpopJkt: null
   });
-  const legacy = await startSession(h.db, accountId);
 
   const browser = new Browser(h.base);
   const login = await (await browser.get('/account/login')).text();
   await browser.follow(await browser.post('/account/login', { csrf: csrfFrom(login)!, username: first.username, password: PASSWORD }));
   const page = await (await browser.get('/account/apps')).text();
-  return { username: first.username, accountId, hostA: first.accessToken, hostB: second, app: app.accessToken, legacy, browser, page, csrf: csrfFrom(page)! };
+  return { username: first.username, accountId, hostA: first.accessToken, hostB: second, app: app.accessToken, browser, page, csrf: csrfFrom(page)! };
 }
 
 const live = async (token: string, audience?: string) => (await verifyOAuthAccessToken(h.db, token, [], audience ? { audience } : {})).ok;
@@ -91,7 +89,7 @@ test("another person's app cannot be disconnected from this page, nor with a for
   assert.ok(await live(mine.hostA), 'a CSRF value from another session is refused');
 });
 
-test('sign out everywhere ends the hosts, the iPhone app, the legacy session and this browser', async () => {
+test('sign out everywhere ends the hosts, the iPhone app and this browser', async () => {
   const person = await personWithApps();
   const done = await person.browser.follow(await person.browser.post('/account/signout-everywhere', { csrf: person.csrf }));
   assert.ok((await done.response.text()).includes('Signed out everywhere'));
@@ -99,7 +97,6 @@ test('sign out everywhere ends the hosts, the iPhone app, the legacy session and
   assert.equal(await live(person.hostA), false);
   assert.equal(await live(person.hostB), false);
   assert.equal(await live(person.app, API_RESOURCE), false, 'the iPhone app too');
-  assert.equal(await verifyAccessToken(h.db, person.legacy.accessToken), null, 'and the old-style session');
   const again = await person.browser.get('/account/apps');
   assert.equal(again.headers.get('location'), '/account/login', 'this browser is signed out as well');
 });

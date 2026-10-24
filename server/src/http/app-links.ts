@@ -1,5 +1,5 @@
 /**
- * Universal links for the app's sign-in callback. Plan 3.5.
+ * Universal links for the app's sign-in callback.
  *
  * The app's preferred redirect URI is an https URL on this host. iOS hands it
  * to the app only if this host publishes an apple-app-site-association file

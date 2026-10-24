@@ -1,7 +1,7 @@
 /**
  * A PostgreSQL server that is down, or goes away, fails fast and closed: a
  * 503 within the connect timeout, never a request queued for ever and never a
- * 500 with a stack trace. Found in the phase 4 failover drill. AC-47.
+ * 500 with a stack trace. AC-47.
  */
 
 import test from 'node:test';

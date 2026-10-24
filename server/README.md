@@ -1,17 +1,16 @@
 # IoT Switch — backend
 
-Persistent accounts, sessions, and the four device operations from
-`../requirement.md` sections 4, 6, 7.1 and 11.
-
-Unlike `../spike`, this is meant to survive. Phases 3–5 build on it: the MCP
-adapter will call the same device service directly rather than over HTTP.
+The OAuth 2.1 authorization server, the MCP server and its views, the REST API
+and the Device Service behind both, from `../requirement.md`. The design is in
+[`../docs/architecture.md`](../docs/architecture.md) and
+[`../docs/authentication-architecture.md`](../docs/authentication-architecture.md).
 
 ## Run
 
 ```bash
 npm install
 npm start          # http://localhost:4000
-npm test           # 286 tests on PGlite and in-memory stores
+npm test           # 279 tests on PGlite and in-memory stores
 npm run test:pg    # the same on PostgreSQL 17 and Redis 7 (local containers, or CI)
 npm run typecheck
 ```
@@ -23,19 +22,28 @@ there are no enums or parameter properties anywhere in `src`.
 
 ```
 src/
+  index.ts         profile S: every component in one process
+  entry/           profile M: one entry point per component
   normalize.ts     the name folds, in one place on purpose
-  password.ts      argon2id
+  password.ts      Argon2id over an HMAC under the password pepper
   errors.ts        the closed error-code set from spec section 6.3
-  db/              schema, migrations, and the Queryable seam
-  domain/          accounts, sessions, devices, audit
-  http/            routes, middleware, the single error-to-body mapping
+  db/              PGlite and PostgreSQL drivers, the schema, the Queryable seam
+  domain/          accounts, devices, audit
+  device-service/  the only caller of the device rules; verifies internal tokens
+  http/            the REST API: routes, middleware, the single error-to-body mapping
+  oauth/           the authorization server, hosted pages and account pages
+  mcp/             the MCP endpoint: gate, policy, tools, resources, views
+  security/        keys, KMS, rate limits, DPoP replay, workload identities
+  stores/          shared state, in memory or in Redis
+  split/           profile M: mTLS listeners and remote clients
+  observability/   logger, metrics, alerts
 ```
 
 **`domain/devices.ts` takes an `Identity`, not a request.** That is spec
 section 3's requirement that the REST API and the MCP tools share one
-implementation of the business rules. When phase 4 arrives, the adapter passes
-`{ accountId, channel: 'mcp' }` and everything — validation, ownership,
-version checks, auditing — applies unchanged.
+implementation of the business rules. The Device Service builds the identity
+from a verified internal token, so validation, ownership, version checks and
+auditing apply identically to both.
 
 ## What the database enforces
 
@@ -54,33 +62,12 @@ Two details that are easy to get wrong and are tested: setting a device to the
 state it already has advances neither `version` nor `updatedAt`, and a replayed
 control with a consumed version conflicts rather than inverting the state.
 
-## Sessions
-
-Access tokens are opaque, stored hashed, and resolved against the `sessions`
-table on **every** protected request. That lookup is deliberate. Spec section
-7.2 requires logout to invalidate access tokens already issued, and a signed
-token validated only by signature and expiry cannot be withdrawn.
-
-Refresh tokens rotate. Each refresh appends a row to the same family and marks
-the old one replaced. Presenting an already-replaced token means it leaked, so
-the whole family is revoked — including the session the thief did not steal.
-
-Rotation marks the outgoing session replaced but does **not** revoke it. Its
-refresh token is already dead, and its access token expires on its own within
-minutes; revoking immediately would fail every request a client had in flight
-when it refreshed proactively. Logout and detected reuse still revoke the
-whole family at once.
-
-Expired sessions and access tokens are swept hourly. Both are joined on every
-protected request, so leaving them to accumulate degrades latency with uptime
-rather than with load.
-
 ## The authorization server
 
 `src/oauth/` is a complete OAuth 2.1 authorization server, built to the MCP
 authorization specification revision `2026-07-28`. It is what lets an external
-host — Claude, ChatGPT — connect to the MCP server that phase 4 will add,
-without a credential ever passing through a tool, a model, or a conversation.
+host — Claude, ChatGPT — and the iOS app connect without a credential ever
+passing through a tool, a model, a conversation or app code.
 
 The flow is ordinary authorization-code with PKCE. What is worth knowing:
 
@@ -92,8 +79,11 @@ The flow is ordinary authorization-code with PKCE. What is worth knowing:
   hosts and not others.
 - **`client_id_metadata_document_supported` and `token_endpoint_auth_methods_supported: ["none"]`**
   are both advertised. Claude picks CIMD only when both are present.
-- **Tokens are audience bound** (RFC 8707). A token minted for another resource
-  is refused here however valid it is there.
+- **Tokens are opaque, audience bound** (RFC 8707) **and checked on every
+  request.** A token minted for another resource is refused however valid it
+  is there, and a revoked grant stops working on the next call: spec section
+  7.2 requires that tokens already issued stop working, which a token validated
+  only by signature and expiry cannot do.
 - **Everything that can leak is treated as leaked.** A replayed authorization
   code revokes exactly the grant it produced; a replayed refresh token revokes
   the whole grant, including the token the thief did not steal.
@@ -175,9 +165,9 @@ the caller's token for an internal one before calling the Device Service
   (RFC 8693, `oauth/exchange.ts`) for a one-minute ES256 JWT: audience
   `https://device.internal`, exactly one scope, `act` naming the adapter and
   `cnf` binding it to that adapter's workload identity. The MCP adapter may
-  exchange only OAuth tokens for the MCP resource; the REST gateway only
-  the app's OAuth tokens for the API, or a legacy first-party session. Tokens are cached per grant and scope, and dropped
-  the moment the grant is revoked.
+  exchange only OAuth tokens for the MCP resource; the REST gateway only the
+  app's OAuth tokens for the API. Internal tokens are cached per grant and
+  scope, and dropped the moment the grant is revoked.
 - **Verify everything.** The Device Service checks signature, `typ: at+jwt`,
   issuer, audience, expiry, the scope the operation needs, and that the token
   names and is bound to the workload presenting it. The account comes from
@@ -187,13 +177,13 @@ the caller's token for an internal one before calling the Device Service
   all read it. A tool name that is not in it is treated as protected.
 - **Budgets.** At most 6 switches a minute per device, 20 a minute and 10 new
   devices an hour per grant — a hard ceiling on what an injected prompt can
-  make a host do. Report-only until `WRITE_BUDGETS=enforce`.
+  make a host do. `WRITE_BUDGETS=report` logs instead of refusing, for
+  measuring a changed limit.
 - **Audit.** Every change records the client, grant, adapter and sign-in
   method behind it, taken from the verified internal token.
 
-While everything runs in one process, a workload identity is a capability
-object created at start-up; when the components are split, it becomes the
-adapter's mTLS certificate.
+In one process, a workload identity is a capability object created at
+start-up; split into processes, it is the adapter's mTLS certificate.
 
 ## The iOS app's sign-in: PAR and DPoP
 
@@ -221,18 +211,17 @@ else.
   needs a proof from the same key, so a stolen refresh token is as useless as
   a stolen access token.
 
-Hosts that send a DPoP proof get bound tokens too, at `/mcp` as well as the
-API. Nothing requires them to.
+The REST API accepts nothing else: a bearer token, a bound token without its
+proof, or a token for another resource gets `401`. `GET /v1/me` answers who the
+caller is; signing in, refreshing and signing out all happen at the
+authorization server.
 
-The old password endpoints under `/v1/auth/*` still answer, now with
-`Deprecation` and `Sunset` headers. `LEGACY_FIRST_PARTY_AUTH=off` retires
-sign-up, log-in and refresh with `410`; `DPOP_REQUIRED_FOR_API=on` refuses
-anything at the API that is not DPoP-bound. Both are for after the browser
-sign-in build has shipped.
+Hosts that send a DPoP proof get bound tokens too, at `/mcp`. Nothing requires
+them to.
 
 `/.well-known/apple-app-site-association` is served on the API host once
-`APPLE_TEAM_ID` is set, for the universal-link callback that replaces the
-custom scheme. `/oauth/callback` there is a page that tells a person who
+`APPLE_TEAM_ID` is set, for the universal-link callback; without it the app
+uses its custom scheme. `/oauth/callback` there is a page that tells a person who
 lands on it in a browser to go back to the app, and never shows the code.
 
 ## The MCP App views
@@ -255,16 +244,21 @@ views never mention a credential header or reach for browser storage.
 one user-supplied string that reaches these templates, and the templates are
 otherwise entirely static.
 
-### The inline row budget is a guess
+Each view's URI carries a hash of its page (`ui://iot/devices.e824b396.html`):
+hosts cache templates by URI across reconnects, so changed code must be a new
+URI. `UI_DIAGNOSTICS=1` adds a panel to the device list showing the build and
+every message the host sent, for host verification.
+
+### The inline row budget
 
 `devices.js` renders `INLINE_ROW_BUDGET` rows inline and offers fullscreen for
 the rest, because on a phone the conversation owns vertical scrolling: a pan
 starting inside an inline card scrolls the chat, and the host clips whatever
 overflows. A long list rendered inline is partly unreachable, not merely ugly.
 
-The number is currently **4**, which is Claude's published guidance for an
-inline card and not an observation. Question 2 in `../spike/FINDINGS.md` exists
-to replace it with a measurement. When that is answered, change the constant.
+The number is **4**, Claude's published guidance for an inline card. A desktop
+browser has room for more; a phone measurement is still to be taken
+([`../docs/host-compatibility.md`](../docs/host-compatibility.md), Q2).
 
 ### Looking at the views
 
@@ -275,10 +269,8 @@ node tools/mock-host/run.mjs    # harness on :8099, prints a URL
 
 The harness is a mock MCP Apps host: it implements the bridge protocol, proxies
 tool calls to the running server, and renders any of the four views in an
-iframe with a live message log. It is not a test and is not shipped. It exists
-because the views cannot otherwise be looked at, and it earned its place
-immediately — it found a handler-registry collision in the bridge that every
-unit test passed straight over.
+iframe with a live message log. It is not a test and is not shipped; it is how
+a view is looked at, and its messages watched, without a real host.
 
 ## Acceptance
 
@@ -286,9 +278,8 @@ unit test passed straight over.
 npm run acceptance
 ```
 
-Runs the suite and reports which of the 47 criteria — the 28 in section 12 of
-`../requirement.md`, plus nineteen added by the authentication redesign — it
-establishes, which are only partly established, and which cannot be
+Runs the suite and reports which of the 47 criteria in section 12 of
+`../requirement.md` it establishes, which are only partly established, and which cannot be
 established from here at all. A skipped test proves nothing, and criteria that
 need PostgreSQL or Redis are only reported proven by a run that had them
 (`DATABASE_URL=… TEST_REDIS_URL=… npm run acceptance`).
@@ -296,10 +287,10 @@ need PostgreSQL or Redis are only reported proven by a run that had them
 It fails if a criterion's evidence goes missing, becomes ambiguous, or starts
 failing, so renaming a test drops its criterion loudly rather than quietly.
 
-It deliberately cannot print all green. Eight criteria need a host account or a
-physical device — whether a host renders the views, how many rows survive an
-inline card, whether every write is confirmed — and the report names each gap
-rather than letting a green suite imply the product is finished.
+It deliberately cannot print all green. Some criteria need a host account or a
+physical device — Claude on iPhone, how many rows fit in an inline card on a
+phone, a platform passkey — and the report names each gap rather than letting
+a green suite imply the product is finished.
 
 ```bash
 npm run client-check
@@ -312,20 +303,19 @@ stands in for the person only where a real client opens a browser.
 
 Everything else in the suite drives the endpoints directly, which proves they
 behave as intended but not that a real client can find its way through them.
-This found a bug nothing else did: a client validates `structuredContent`
-against a tool's declared `outputSchema` whenever it is present, **including on
-an error result**, so every version conflict reached it as "structured content
-does not match the tool's output schema" rather than as the conflict. Error
-codes now travel in `_meta`, which is not schema-bound.
+A client validates `structuredContent` against a tool's declared
+`outputSchema` whenever it is present, **including on an error result**, which
+is why error results carry none and their codes travel in `_meta`.
 
 ```bash
 npm run host-check
 ```
 
-Opens a tunnel, starts the server told the origin it is reachable at, verifies
+Opens a tunnel, starts the server with the tunnel's origin as its public URL, verifies
 discovery and the `401` challenge over real HTTPS, and prints the connector URL
 with the checklist. The point is that everything that can fail without a host
-has already failed by the time you paste that URL anywhere.
+has already failed by the time you paste that URL anywhere. Record what a host
+does in [`../docs/host-compatibility.md`](../docs/host-compatibility.md).
 
 ## Databases and shared state
 
@@ -340,7 +330,7 @@ there, one schema per test database, so `test/concurrency.test.ts`,
 `test/oauth-refresh.test.ts` and the fifty-way `test/contention.test.ts`
 contend through a real connection pool. CI runs both.
 
-`REDIS_URL` moves what used to be per-process into Redis: rate-limit and
+`REDIS_URL` puts the shared state in Redis instead of each process's memory: rate-limit and
 write-budget counters, used DPoP proof ids, sealed refresh responses, and
 revocation events. With it, several processes can serve traffic without each
 allowing the full rate limit or keeping internal tokens for a grant another
@@ -352,8 +342,9 @@ free pass.
 The peppers, the MAC key and the signing keys come from the environment, from
 `keys.json` beside the database, or, with `KMS_PROVIDER`, from an envelope file
 whose secrets are encrypted under a KMS key and decrypted once at start-up.
-With a KMS, the signing keys never leave it. Only `KMS_PROVIDER=local`, a
-software stand-in, exists until a cloud is chosen. Rotate with
+With a KMS, the signing keys never leave it. `KMS_PROVIDER=local` is a software
+KMS for development; a cloud provider is an adapter implementing the `Kms`
+interface in `src/security/kms.ts`. Rotate with
 `npm run keys -- rotate-pepper` (every 90 days) or `rotate-signing` (every 30).
 
 ## The account pages
@@ -386,17 +377,17 @@ write budgets, cache hit ratios) are served in Prometheus format on
 lines; `../ops/alerts.yml` has the same rules for Prometheus. `npm run load`
 drives the tool-call and refresh paths against a running server.
 
-## Known gaps for later phases
+## Known limits
 
-- Rate limits are shared only with `REDIS_URL`. `TRUST_PROXY` is off unless
-  set, because trusting `X-Forwarded-For` unconditionally lets a client forge
-  `req.ip` and walk around the limit. Sign-up and log-in are bucketed by
-  address; refresh is bucketed by the token presented, so an office NAT cannot
-  log its eleventh user out.
-- No cloud KMS adapter: the provider is gate G4.
+- Rate limits are shared across processes only with `REDIS_URL`. `TRUST_PROXY`
+  is off unless set, because trusting `X-Forwarded-For` unconditionally lets a
+  client forge `req.ip` and walk around the limit. Credential submissions are
+  bucketed by address; the token endpoint is not, because hosts call it from
+  their own infrastructure on behalf of every one of their users.
+- No cloud KMS adapter is built in; `local` is the only provider.
 - Device names fold with NFKC plus lowercase, which is not full Unicode case
   folding — "Straße" and "STRASSE" remain distinct devices. Usernames are
   unaffected because validation restricts them to ASCII first.
 - `USERNAME_TAKEN` is not in the spec's section 6.3 table, which covers only
   the device API. Sign-up needs a distinct code so the client can highlight the
-  username field; the spec should gain it.
+  username field.

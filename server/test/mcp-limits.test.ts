@@ -27,9 +27,9 @@ test('anonymous traffic to the endpoint is bounded', async () => {
 });
 
 test('random bearer tokens cannot escape the address bucket', async () => {
-  // The bucket used to be chosen from the bearer header before the token was
-  // verified, so a fresh random string bought a fresh, empty bucket: seventy
-  // requests, zero refusals.
+  // A bucket chosen from the bearer header before the token is verified would
+  // let a fresh random string buy a fresh, empty bucket: seventy requests,
+  // zero refusals.
   const h = await startServer();
   try {
     let limited = 0;

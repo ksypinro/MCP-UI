@@ -1,5 +1,5 @@
 /**
- * Alerts raised in-process, as log lines at level "alert". Plan 4.8.
+ * Alerts raised in-process, as log lines at level "alert".
  *
  * The same conditions are written as Prometheus rules in ops/alerts.yml for a
  * deployment that scrapes the metrics; these exist so that a single process

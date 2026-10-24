@@ -1,6 +1,6 @@
 /**
  * The Device Service: the one implementation of the device rules, reachable
- * only with an internal token. Plan 2.4.
+ * only with an internal token.
  *
  * It wraps domain/devices.ts, which still holds every rule — validation,
  * ownership, versions, auditing — unchanged. What this layer adds is that

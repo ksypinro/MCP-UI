@@ -1,6 +1,6 @@
 /**
  * The Device Service accepts nothing but a valid internal token from the
- * workload it names. Plan 2.4, architecture section 8.7.
+ * workload it names. Architecture section 8.7.
  */
 
 import test, { after, before } from 'node:test';

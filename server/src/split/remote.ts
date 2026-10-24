@@ -1,7 +1,6 @@
 /**
  * The edge processes' view of the authorization server and the Device
  * Service in profile M: the same interfaces as in one process, over mTLS.
- * Plan 4.7.
  *
  * Introspection answers are cached briefly (at most 30 seconds, never past
  * the token's own expiry), keyed by a hash of the token, and dropped the
@@ -15,7 +14,6 @@ import { createHash } from 'node:crypto';
 import type { Agent } from 'node:https';
 import { AppError, ERROR_STATUS, type ErrorCode } from '../errors.ts';
 import type { Account, Device } from '../domain/types.ts';
-import type { VerifiedSession } from '../domain/sessions.ts';
 import type { DeviceService } from '../device-service/service.ts';
 import { InternalTokenRefused } from '../device-service/verify.ts';
 import type { Exchanger } from '../exchange-client.ts';
@@ -94,14 +92,6 @@ export function remoteVerifier(authUrl: string, agent: Agent, revocations: Revoc
       };
     },
 
-    async session(token): Promise<VerifiedSession | null> {
-      if (!token) return null;
-      const { status, body } = await call(agent, `${authUrl}/introspect`, { token, kind: 'session' });
-      if (status !== 200) throw new AppError('SERVICE_UNAVAILABLE');
-      return body?.active
-        ? { accountId: body.accountId, sessionId: body.sessionId, familyId: body.familyId, expiresIn: body.expiresIn }
-        : null;
-    },
 
     async account(accountId): Promise<Account | null> {
       const known = accounts.get(accountId);

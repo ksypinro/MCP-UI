@@ -1,25 +1,9 @@
 # IoT Device Control — Application Requirements
 
-Version: 1.1 draft  
-Date: 2026-09-21  
-Supersedes: 1.0 draft  
+Version: 1.0  
+Date: 2026-10-24  
 Primary platform: iOS, with responsive support for iPad  
 Working product name: IoT Switch
-
-## 0. Revision notes (1.0 → 1.1)
-
-Version 1.0 was internally coherent but rested on host-platform facts that no longer hold, and on two specification revisions that have since been superseded. This revision changes the following. Section 15 records the sources and the date they were verified.
-
-1. **Host reach corrected.** ChatGPT custom MCP connectors are documented as web-only. Claude is the only target host that runs this integration on an iPhone. In both hosts the connector is installed from web or desktop, never from the phone. See §2, §10.3, §12.
-2. **The first-party inline-credential profile is removed.** §7.4 of version 1.0 defined a presentation profile for "a first-party host under our control," which §2.2 simultaneously placed outside version 1. Host-managed OAuth on a hosted page is now the only credential-entry path in version 1.
-3. **Authorization updated from MCP `2025-11-25` to `2026-07-28`:** Client ID Metadata Documents preferred over now-deprecated Dynamic Client Registration, and RFC 9207 `iss` validation added. The RFC 8707 `resource` parameter has been required since `2025-06-18` and remains so. The `scope` parameter in the `401` challenge is a SHOULD, not a MUST, but this specification requires it anyway (§7.3): without it Claude requests every advertised scope.
-4. **MCP Apps pinned to the released `2026-01-26` extension** rather than the pre-release overview, with real `_meta.ui` field names, the host-bridge correction, and Claude's inline-card constraints applied to §9.
-5. **Domain gaps closed:** `normalizedName` added to Device, normalization folds defined, a complete error-code enum, a list ordering contract, a per-account device cap, and explicit no-op `updatedAt` behavior.
-6. **Sequencing changed.** §13 gains a step 0 feasibility spike so the host-dependent unknowns are settled before the native application is built.
-
-**Amended 2026-10-24 (host verification).** Claude and ChatGPT were run against the server on the web and on Android (`spike/FINDINGS.md`). ChatGPT's connector, once added on the web, works in its Android app, so ChatGPT is not web-only (§2, §10.3, AC-14, §14 decision 3). Neither host renders our auth card before the first connection; both start sign-in with their own Connect (§7.4, AC-13). Neither confirmed individual switch flips inside the card (§2).
-
-**Amended 2026-10-18 (authentication redesign, phase 3).** The iOS app no longer has credential fields. It signs in on the same hosted page as the AI hosts, through the system browser sheet, with tokens bound to a key in the Secure Enclave. §2, §5.2, §7.1 and §10.1 are revised to match; the design is in `docs/authentication-architecture/`.
 
 ## 1. Product objective
 
@@ -38,21 +22,21 @@ Authentication is an additional logical service, with its own endpoints. It does
 
 ## 2. Scope and working assumptions
 
-The following assumptions make this draft implementable. They are proposed defaults, not additional user-confirmed requirements. Rows marked **verified** were checked against host documentation on the date in §15.
+The following decisions define version 1. Rows marked **verified** were checked against host documentation on the date in §13.
 
 | Decision | Working assumption |
 | --- | --- |
 | Device behavior | Version 1 simulates devices in a database. No physical hardware connection. |
 | Main application | A native iOS application provides the complete device-control experience. |
-| External MCP clients | **Claude** — web, desktop, iOS, and Android. **ChatGPT** — developer mode and custom MCP connectors are documented as available to Pro, Plus, Business, Enterprise, and Education accounts; connector setup is done on the web, after which the connector works in the ChatGPT mobile app. *(observed 2026-10-24: Claude web and Android, ChatGPT Plus on the web and Android; iOS not yet observed)* |
+| External MCP clients | **Claude** — web, desktop, iOS, and Android. **ChatGPT** — developer mode and custom MCP connectors are documented as available to Pro, Plus, Business, Enterprise, and Education accounts; connector setup is done on the web, after which the connector works in the ChatGPT mobile app. *(verified on the web and Android; see `docs/host-compatibility.md`)* |
 | Connector installation | In Claude, a custom connector must be added on web or desktop before it appears on mobile. In ChatGPT, developer-mode setup is performed on the web. No end-to-end flow begins on the phone. *(verified)* |
-| Host write approval | A host may require explicit user confirmation for every write tool call, and may re-prompt in each new conversation. ChatGPT documents this behavior for developer mode. Switch and add-device interactions must remain correct when each write is individually approved or declined. *(documented)* In practice neither host confirmed switch flips made inside the card: ChatGPT asked once, before first using the server, and Claude web did not ask. The server's write budgets are the per-write ceiling a person does not have to opt into. *(observed 2026-10-24)* |
+| Host write approval | A host may require explicit user confirmation for every write tool call, and may re-prompt in each new conversation. ChatGPT documents this behavior for developer mode. Switch and add-device interactions must remain correct when each write is individually approved or declined. *(documented)* In practice neither host confirms switch flips made inside the card: ChatGPT asks once, before first using the server, and Claude web does not ask. The server's write budgets are therefore the per-write ceiling a person does not have to opt into. |
 | User ownership | Each device belongs to exactly one account. No shared households or administrators. |
 | New device state | Every new device starts Off. |
 | Device names | Required; unique within the owner's account under the normalization fold defined in §4.2. |
 | Authentication | Exactly two credential inputs: username and password. |
 | Authentication presentation | Credentials are entered only on our hosted authorization page: reached through the host's OAuth flow for MCP, and through the system browser sheet for the iOS app. No credential entry occurs inside an MCP App, a tool argument, a conversation, or a native screen. |
-| Minimum OS version | iOS 18.0. Raised from 17.0 for browser sign-in (decided 2026-10-18). |
+| Minimum OS version | iOS 18.0, for browser sign-in with an HTTPS callback. |
 
 ### 2.1 Included in version 1
 
@@ -316,13 +300,13 @@ The iOS app is an OAuth client of the same authorization server the AI hosts use
 | `GET /authorize?client_id&request_uri` | The hosted sign-in or sign-up page, opened in the system browser sheet. Redirects to the app's callback with `code`, `state` and `iss`. |
 | `POST /token` | Exchange the code, or rotate the refresh token. Every request carries a DPoP proof (RFC 9449) from the app's Secure Enclave key. |
 | `POST /revoke` | Revoke the grant on logout. |
-| `GET /v1/auth/me` | Return the authenticated account ID and username. |
+| `GET /v1/me` | Return the authenticated account ID and username. |
 
 Every API request carries `Authorization: DPoP <token>` and a fresh proof. A token without its key is useless.
 
 **Session policy.** The app's access tokens live 10 minutes, are bound to its key, and are held only in memory. Refresh tokens live 30 days in the Keychain (this device only), rotate on each use, and are bound to the same key; reuse outside a 30-second grace window revokes the whole grant. The app refreshes proactively when a quarter of the access token's life remains, once for all concurrent callers, and signs out only when the server rejects the refresh token.
 
-**Legacy endpoints.** `POST /v1/auth/signup`, `login`, `refresh` and `logout` served the password-field app. They are deprecated (`Deprecation` and `Sunset` headers) and are switched off with `LEGACY_FIRST_PARTY_AUTH=off` once the browser sign-in build has shipped. Neither they nor the flow above is an OAuth password grant.
+The REST API accepts nothing else: a bearer token, a token without its proof, or a token issued for another resource is refused. There is no OAuth password grant.
 
 **Revocation is checked per request.** §7.2 requires that a token issued before logout stops working immediately. That rules out a bare stateless JWT validated only by signature and expiry. Implement one of:
 
@@ -389,9 +373,7 @@ Tokens received for the MCP resource must not be blindly forwarded to a differen
 
 Provide `ui://iot/auth.html` as a public MCP UI resource and `show_auth` as a public presentation tool. The screen must show the product name, signed-out state, Sign Up and Log In choices, loading/error states, and an explanation that authentication is needed to access devices. **It must contain no credential fields.**
 
-Version 1.0 of this document defined a second presentation profile for "a first-party host under our control" that would render a complete username/password form inline. That profile is removed: §2.2 excludes a first-party host from version 1, so the profile described software that will not exist, and no requirement may depend on it.
-
-Connecting to an MCP server does not, by itself, guarantee that a host will render any custom UI. A host may show its own Connect prompt or open authorization before it renders an MCP App. Host verification (2026-10-24) found that both do exactly that before the first connection: Claude does not offer a disconnected connector's tools at all, public ones included, and shows its own "Connectors that could help — Connect" card instead; ChatGPT authorizes when the connector is set up. Neither rendered `show_auth` before connecting, and both reached our hosted page. Therefore:
+Connecting to an MCP server does not, by itself, guarantee that a host will render any custom UI. A host may show its own Connect prompt or open authorization before it renders an MCP App. Claude and ChatGPT both do exactly that before the first connection (`docs/host-compatibility.md`): Claude does not offer a disconnected connector's tools at all, public ones included, and shows its own "Connectors that could help — Connect" card instead; ChatGPT authorizes when the connector is set up. Neither renders `show_auth` before connecting, and both reach our hosted page. Therefore:
 
 - An external host can render `show_auth` when the tool is invoked; the server must not promise unsolicited UI at connection time.
 - Sign Up / Log In actions must enter the host-supported authorization flow. Where no explicit connect action is exposed to the UI, call a protected, read-only tool — `list_devices` — to obtain the host's authentication challenge. Never initiate authentication by attempting a device mutation.
@@ -447,7 +429,7 @@ Device mutation tools are separate from presentation helpers so a switch click c
 | `show_auth` | Optional `mode`: `login` or `signup` | Public | model, app | Authentication entry UI; links `ui://iot/auth.html`. |
 | `get_auth_status` | None | Public, with optional verified token | app | `authenticated: false`, or minimal authenticated account information. No tokens. |
 
-`show_add_device` is **public**, changed from `devices:create` in version 1.0. Gating a form's presentation behind a write scope means that merely displaying it can trigger a `403` and a re-consent prompt before the user has typed anything. The form is inert; the `add_device` call it makes is where authorization is enforced.
+`show_add_device` is **public**. Gating a form's presentation behind a write scope means that merely displaying it can trigger a `403` and a re-consent prompt before the user has typed anything. The form is inert; the `add_device` call it makes is where authorization is enforced.
 
 The four device tools map to the four device business APIs. The remaining tools are presentation/authentication helpers, not additional device APIs. There is deliberately no model-callable password-based `login` or `signup` tool.
 
@@ -491,7 +473,7 @@ Illustrative result from `control_device`:
 | `ui://iot/device.html` | One device, its current state, switch, and last-updated information. |
 | `ui://iot/add-device.html` | Device Name input, default-Off explanation, submit/cancel, and validation feedback. |
 
-These resources may share a frontend bundle. They must use the same state labels, validation rules, ordering, and interaction behavior as the native app.
+Each URI carries a hash of its content, for example `ui://iot/devices.3f9a1c2b.html`, so a host that caches templates by URI fetches changed code (§11); the table omits it. These resources may share a frontend bundle. They must use the same state labels, validation rules, ordering, and interaction behavior as the native app.
 
 ### 9.2 Bridge and lifecycle
 
@@ -580,7 +562,7 @@ Accordingly:
 
 ### 10.3 External MCP host: first use
 
-1. **On web or desktop**, the user adds the connector — a custom connector in Claude, or a developer-mode MCP connector in ChatGPT. This step cannot be performed in either mobile app. In both hosts the connector then becomes available in the mobile apps (observed on Android for both).
+1. **On web or desktop**, the user adds the connector — a custom connector in Claude, or a developer-mode MCP connector in ChatGPT. This step cannot be performed in either mobile app. In both hosts the connector then becomes available in the mobile apps.
 2. If the host permits anonymous discovery, public tools and static UI resources are available; no private data is returned.
 3. The host may invoke `show_auth`, or the first protected operation triggers the `401` authorization challenge of §7.5.
 4. The user sees the MCP authentication entry screen or the host's own Connect prompt.
@@ -644,32 +626,29 @@ Note that `get_auth_status` is public and returns `200` even when a token has ex
 | AC-26 | Device cap | Creation beyond the cap fails with `DEVICE_LIMIT_REACHED` and creates nothing. |
 | AC-27 | Host write approval | Where a host confirms each write, approving applies exactly one change and declining leaves the device unchanged with the UI showing the confirmed state. |
 | AC-28 | Inline presentation | With more devices than fit an inline card, the list remains fully reachable on a phone via fullscreen display mode; no content is trapped behind inline scrolling. |
+| AC-29 | Authorization pages cannot be framed | Every hosted page sends `frame-ancestors 'none'` and `X-Frame-Options: DENY`, and limits `form-action` to its own origin and the client it was issued for. |
+| AC-30 | Single-use codes and race-safe refresh | A code redeems once and a replay revokes what it produced; concurrent refreshes of one token rotate it once, a duplicate inside the grace window gets the identical response, and reuse after it revokes the grant. |
+| AC-31 | Tokens are stored only as keyed hashes | Access, refresh and code values are stored as HMAC-SHA256 under a pepper outside the database, carry a typed prefix and checksum, and keep verifying across a pepper rotation until they expire. |
+| AC-32 | Consent names who is asking | The consent page shows the client's host and the redirect host; an approval is remembered only for metadata-document or pre-registered clients, never for dynamically registered ones. |
+| AC-33 | Client metadata fetches cannot reach private networks | A Client ID Metadata Document is fetched only from public unicast addresses, over HTTPS, within size and time limits, and is never followed through a redirect. |
+| AC-34 | No adapter reaches the device rules directly | Both the REST and MCP adapters exchange the caller's token (RFC 8693) for an internal token before calling the Device Service, which refuses anything else. |
+| AC-35 | Internal tokens are narrowly bound | An internal token names one scope, the Device Service audience, and the workload it was issued to (`act`, `cnf`); it lives one minute and never outlives the token it came from. |
+| AC-36 | Write budgets | At most 6 switches a minute per device, and 20 switches a minute and 10 new devices an hour per grant; beyond that the REST API answers `429` with `Retry-After` and MCP returns a readable tool error. |
+| AC-37 | Audit names the actor chain | Every mutation's audit event names the account, client, grant, calling workload and sign-in method, taken from the verified internal token. |
+| AC-38 | Key-bound tokens | A DPoP-bound token is refused without a valid, unreplayed proof from its key, at the token endpoint and the API. |
+| AC-39 | The native app never handles a password | Sign-in and sign-up happen only on the hosted page in the system browser sheet; the app sees no credential field. |
+| AC-40 | The app keeps its session through flaky networks | Refresh is single-flight, survives offline periods, and signs out only when the server rejects the refresh token. |
+| AC-41 | The first-party app pushes its request | The `iot-switch-ios` client must use PAR with PKCE and `dpop_jkt`, for the REST API only; a pushed request is used once and the browser cannot change it. |
+| AC-42 | The REST API accepts only key-bound app tokens | A bearer token, a token without its proof, or a token for another resource is refused with `401`. |
+| AC-43 | Concurrency on a real database | Concurrent refreshes, code redemptions, switches and creates behave as AC-09, AC-10 and AC-30 require on a PostgreSQL server. |
+| AC-44 | Revocation crosses processes | A grant revoked in one process is refused by every other on its next request, and their caches drop it. |
+| AC-45 | Phishing-resistant passkeys | A passkey can be added on the account page and used to sign in; one made for another site or answered at another origin is refused, and a cloned authenticator is detected by its counter. |
+| AC-46 | Connected apps | A person can see every application holding a grant, with what it may do and when it was last used, revoke any one, and sign out everywhere; a password change does the same. |
+| AC-47 | Store outages fail closed | With the database, Redis or the authorization server unreachable, requests are refused quickly with `503`; none is served unauthenticated, and service recovers by itself. |
 
 External-host acceptance must record the client app/version, account plan, enabled connector capabilities, observed authentication presentation, and test date. A host capability limitation must be reported explicitly; native-app success alone does not establish ChatGPT or Claude compatibility.
 
-## 13. Suggested implementation sequence
-
-**0. Host feasibility spike, before anything else.** Stand up a throwaway MCP server with one public tool, one protected tool returning the §7.5 challenge, and one `ui://` resource rendering a list with switches. Add it as a custom connector in Claude on desktop, then open the same conversation on an iPhone. Attempt the same in ChatGPT developer mode on the web. Record what actually renders, whether the OAuth flow completes from each surface, how much of a list survives inline, and what approval each write requires. Every unresolved item in §14 is answerable from this spike, and its outcome may change the scope of the work below.
-
-1. Build persistent accounts, authentication, device model, and the four API operations.
-2. Build the native iOS authentication and device-control screens.
-3. Expose the same operations through MCP tools and validate authorization/ownership.
-4. Add device MCP UI resources and verify the UI-to-tool-to-backend round trip.
-5. Add the MCP authentication entry UI and the hosted OAuth login/sign-up page, with CIMD and DCR registration paths.
-6. Test the complete workflows in Claude on iOS and web and in ChatGPT on web, and document their actual capabilities.
-7. Run the acceptance scenarios, especially two-account isolation, lost responses, and concurrent state changes.
-
-## 14. Decisions awaiting clarification
-
-1. Confirm simulated devices for version 1, or identify the real hardware protocol if required.
-2. Confirm that the native iOS app and the external Claude/ChatGPT MCP UIs are all in scope.
-3. ~~Given that ChatGPT custom connectors are web-only, confirm whether ChatGPT remains a target at all.~~ **Resolved 2026-10-24:** a ChatGPT connector added on the web works in the ChatGPT Android app, so ChatGPT remains a target on the web and on the phone (`spike/FINDINGS.md`, Q5).
-4. Confirm that credential entry on our hosted authorization page, rather than inline in a host's UI, satisfies the sign-up/log-in requirement. Version 1.0 left open the possibility of a first-party host guaranteeing an inline form; §2.2 excludes building one in version 1.
-5. Confirm the device cap of 100 per account and the session lifetimes proposed in §7.1.
-
-This draft uses the defaults in §2 until these decisions are supplied. It does not claim that external apps can be forced to render an authentication form when the connection is first established.
-
-## 15. References
+## 13. References
 
 Verified 2026-09-21. Host behavior changes frequently; re-verify before relying on any row.
 

@@ -1,6 +1,5 @@
 /**
  * Redis-backed stores, for when more than one process serves traffic.
- * Plan 4.2 and 4.4.
  *
  * Each implements the same interface as its in-memory counterpart, and the
  * contract tests (test/stores.test.ts) run one set of assertions against

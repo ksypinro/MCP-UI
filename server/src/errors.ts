@@ -22,9 +22,6 @@ export const ERROR_STATUS = {
   VALIDATION_FAILED: 422,
   INVALID_STATE: 422,
   RATE_LIMITED: 429,
-  // Not in section 6.3: a retired endpoint (the legacy first-party sign-in,
-  // replaced by OAuth). Distinct from 404 so a client knows to update.
-  ENDPOINT_RETIRED: 410,
   INTERNAL_ERROR: 500,
   SERVICE_UNAVAILABLE: 503
 } as const;
@@ -46,7 +43,6 @@ const DEFAULT_MESSAGE: Record<ErrorCode, string> = {
   VALIDATION_FAILED: 'One or more fields are invalid.',
   INVALID_STATE: 'State must be exactly "on" or "off".',
   RATE_LIMITED: 'Too many requests. Try again shortly.',
-  ENDPOINT_RETIRED: 'This endpoint has been retired. Update the app to sign in.',
   INTERNAL_ERROR: 'Unexpected error.',
   SERVICE_UNAVAILABLE: 'Temporarily unavailable. Try again shortly.'
 };

@@ -31,11 +31,8 @@ export const API_BASE_URL = origin(process.env.API_BASE_URL);
 /** True when the three surfaces share one origin, as in local development. */
 export const SINGLE_ORIGIN = AUTH_BASE_URL === MCP_BASE_URL && MCP_BASE_URL === API_BASE_URL;
 
-/** PGlite persists here. See README for why this is not a real server yet. */
+/** PGlite persists here when DATABASE_URL is not set. */
 export const DATABASE_PATH = process.env.DATABASE_PATH ?? './.data';
-
-export const ACCESS_TOKEN_TTL_SECONDS = Number(process.env.ACCESS_TOKEN_TTL_SECONDS ?? 900);
-export const REFRESH_TOKEN_TTL_SECONDS = Number(process.env.REFRESH_TOKEN_TTL_SECONDS ?? 2_592_000);
 
 /** Spec section 4.3. Creation beyond this fails with DEVICE_LIMIT_REACHED. */
 export const MAX_DEVICES_PER_ACCOUNT = 100;

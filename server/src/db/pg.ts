@@ -1,5 +1,5 @@
 /**
- * The PostgreSQL server driver. Plan 4.1.
+ * The PostgreSQL server driver.
  *
  * Same interface as the PGlite driver, so nothing above `src/db` knows which
  * one it is talking to. Two differences are smoothed over here rather than
@@ -23,7 +23,7 @@
  * (DATABASE_QUERY_TIMEOUT_MS, 10 s), and a lost or refused connection becomes
  * 503 SERVICE_UNAVAILABLE rather than a 500 with a stack trace. Without the
  * timeouts the pool waits for ever, and every request queues behind the
- * outage. Found in the phase 4 failover drill.
+ * outage.
  */
 
 import pg from 'pg';

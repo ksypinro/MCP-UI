@@ -28,9 +28,8 @@ export function requestsOfflineAccess(raw: unknown): boolean {
 
 /**
  * Off by default: public clients receive a refresh token whether or not they
- * name offline_access, because it is not yet confirmed that every host does,
- * and withholding one would force a host to re-link every hour. Turn on once
- * host-check shows both hosts send it.
+ * name offline_access, because withholding one would force a host that does
+ * not name it to re-link every hour.
  */
 export function refreshRequiresOfflineAccess(): boolean {
   return process.env.REQUIRE_OFFLINE_ACCESS_FOR_REFRESH === 'true';

@@ -29,7 +29,7 @@ export function formActionSource(redirectUri: string): string {
 
 /**
  * `script` allows the one nonce'd script a page may carry (the WebAuthn
- * ceremony, plan 4.5) and lets it call this origin. Pages without it run no
+ * ceremony) and lets it call this origin. Pages without it run no
  * script at all.
  */
 export function authPageHeaders(

@@ -1,8 +1,7 @@
 /**
  * Access token verification for the resource server.
  *
- * Phase 4's MCP server is the only consumer: it calls this on every protected
- * tool call and turns the result into either an internal Identity or a
+ * The MCP endpoint calls this on every protected tool call and turns the result into either an internal Identity or a
  * WWW-Authenticate challenge.
  */
 

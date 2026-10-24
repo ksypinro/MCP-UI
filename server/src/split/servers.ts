@@ -1,5 +1,5 @@
 /**
- * The internal, mTLS-only listeners of profile M. Plan 4.7.
+ * The internal, mTLS-only listeners of profile M.
  *
  * - The authorization server's: `/introspect`, so the edge processes can
  *   verify callers without database credentials, and `/token-exchange`,
@@ -18,7 +18,6 @@ import type { Db } from '../db/index.ts';
 import { AppError, isAppError } from '../errors.ts';
 import { exchangeToken } from '../oauth/exchange.ts';
 import { verifyOAuthAccessToken } from '../oauth/verify.ts';
-import { verifyAccessToken } from '../domain/sessions.ts';
 import { getAccount } from '../domain/accounts.ts';
 import { API_RESOURCE, RESOURCE_URI, SCOPES, type Scope } from '../oauth/config.ts';
 import { createDeviceService } from '../device-service/service.ts';
@@ -73,12 +72,6 @@ export function internalAuthApp(db: Db): Express {
   app.post('/introspect', async (req: Request, res: Response) => {
     const peer = res.locals.peer as Workload;
     const token = typeof req.body?.token === 'string' ? req.body.token : null;
-    if (req.body?.kind === 'session') {
-      // Legacy first-party sessions belong to the API gateway alone.
-      if (peer.name !== 'api-gw') return void res.json({ active: false });
-      const session = await verifyAccessToken(db, token);
-      return void res.json(session ? { active: true, kind: 'session', ...session } : { active: false });
-    }
     const verified = await verifyOAuthAccessToken(db, token, [], { audience: AUDIENCE_OF[peer.name] });
     if (!verified.ok) return void res.json({ active: false });
     res.json({

@@ -1,5 +1,5 @@
 /**
- * The server's only logger. Plan 4.8.
+ * The server's only logger.
  *
  * Structured, one JSON object per line, and allowlisted: a field is written
  * only if its name is on the list below, so a request object, a header map or

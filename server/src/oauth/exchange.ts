@@ -1,6 +1,6 @@
 /**
  * RFC 8693 token exchange: an edge credential in, a one-minute internal token
- * out. Plan 2.3, architecture section 7.6.
+ * out. Architecture section 7.6.
  *
  * Neither adapter ever forwards the credential it received. Before calling
  * the Device Service it exchanges it for a token whose audience is the Device
@@ -9,9 +9,9 @@
  * A stolen internal token is therefore good for one minute, one scope, and
  * one caller.
  *
- * In one process this is a function call. It is the same check, the same
- * claims and the same signature that an internal HTTP endpoint will serve
- * when the components are split.
+ * In one process this is a function call. Split into processes, the
+ * authorization server serves the same check, claims and signature on its
+ * internal mTLS listener (split/servers.ts).
  */
 
 import { randomBytes } from 'node:crypto';
@@ -19,13 +19,11 @@ import type { Queryable } from '../db/index.ts';
 import { AppError } from '../errors.ts';
 import { keys } from '../security/keys.ts';
 import { workloadUri, type Workload } from '../security/workload.ts';
-import { verifyAccessToken } from '../domain/sessions.ts';
-import { API_RESOURCE, FIRST_PARTY_CLIENT_ID, ISSUER, type Scope } from './config.ts';
+import { API_RESOURCE, ISSUER, type Scope } from './config.ts';
 import { verifyOAuthAccessToken } from './verify.ts';
 
 export const INTERNAL_AUDIENCE = 'https://device.internal';
 export const INTERNAL_TOKEN_TTL_SECONDS = 60;
-export { FIRST_PARTY_CLIENT_ID } from './config.ts';
 
 export interface ExchangeRequest {
   workload: Workload;
@@ -55,9 +53,8 @@ interface Subject {
  *
  * The MCP adapter exchanges only OAuth access tokens issued for the MCP
  * resource, and only for a scope the token already holds. The REST gateway
- * exchanges only the app's credentials: OAuth tokens issued for the REST API,
- * or (until they are retired) first-party sessions. Neither may present the
- * other's.
+ * exchanges only the app's credentials: OAuth tokens issued for the REST API.
+ * Neither may present the other's.
  */
 async function resolveSubject(db: Queryable, request: ExchangeRequest): Promise<Subject> {
   if (request.workload.name === 'mcp-rs') {
@@ -81,16 +78,9 @@ async function resolveSubject(db: Queryable, request: ExchangeRequest): Promise<
       channel: 'native', authMethod: oauth.cnfJkt ? 'oauth-dpop' : 'oauth', expiresIn: oauth.expiresIn
     };
   }
-  if (oauth.reason === 'insufficient_scope') throw new AppError('INSUFFICIENT_SCOPE');
-
-  // A legacy first-party session.
-  const session = await verifyAccessToken(db, request.subjectToken);
-  if (!session) throw new AppError('UNAUTHENTICATED', 'Sign in to continue.');
-  // A first-party session holds every device scope.
-  return {
-    accountId: session.accountId, clientId: FIRST_PARTY_CLIENT_ID, grantId: session.familyId,
-    channel: 'native', authMethod: 'first-party-session', expiresIn: session.expiresIn
-  };
+  throw oauth.reason === 'insufficient_scope'
+    ? new AppError('INSUFFICIENT_SCOPE')
+    : new AppError('UNAUTHENTICATED', 'Sign in to continue.');
 }
 
 const b64url = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');

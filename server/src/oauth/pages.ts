@@ -300,7 +300,7 @@ export function renderErrorPage(title: string, detail: string, nonce: string): s
 /* --------------------------------------------------------------- passkeys */
 
 /**
- * The page's one script: the WebAuthn ceremony (plan 4.5). It turns the
+ * The page's one script: the WebAuthn ceremony. It turns the
  * server's options into what the browser API wants, and the browser's answer
  * back into JSON, and does nothing else. Every decision is the server's.
  */

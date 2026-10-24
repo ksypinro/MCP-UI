@@ -1,5 +1,5 @@
 /**
- * The single source of what each MCP tool requires. Plan 2.6.
+ * The single source of what each MCP tool requires.
  *
  * The HTTP gate reads the scope from here before the SDK sees a request; the
  * tool registrations read their annotations from here; ChatGPT's security

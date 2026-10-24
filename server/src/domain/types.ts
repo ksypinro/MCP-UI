@@ -2,8 +2,8 @@ export type DeviceState = 'on' | 'off';
 
 /**
  * A verified caller. The device service takes this rather than an HTTP
- * request, so the MCP adapter in phase 4 can call the same functions directly
- * and still carry the identity the transport verified — spec section 3.
+ * request, so the REST and MCP adapters call the same functions and both
+ * carry the identity the transport verified — spec section 3.
  *
  * accountId is never accepted from a client payload. It comes from a
  * validated credential, or the call does not happen.
@@ -15,7 +15,7 @@ export interface Identity {
   requestId?: string;
   /** The OAuth client, or the first-party app, the person acted through. */
   clientId?: string;
-  /** The grant (OAuth) or session family (first-party) behind the request. */
+  /** The grant behind the request. */
   grantId?: string;
   /** The workload that called the Device Service on the person's behalf. */
   via?: string;

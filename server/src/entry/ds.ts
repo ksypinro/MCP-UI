@@ -1,5 +1,5 @@
 /**
- * Profile M: the Device Service. Plan 4.7.
+ * Profile M: the Device Service.
  *
  * mTLS only (PORT). Accepts an internal token only over a connection made
  * with the certificate the token is bound to. Verifies tokens against the

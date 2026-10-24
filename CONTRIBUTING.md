@@ -10,7 +10,7 @@ few things that matter here.
 ```bash
 cd server
 npm install
-npm test             # 286 tests, nothing to provision
+npm test             # 279 tests, nothing to provision
 npm run test:pg      # the same on PostgreSQL 17 and Redis 7
 npm run typecheck
 ```
@@ -54,9 +54,9 @@ tends to produce a bug that passes the whole suite.
 
 ### 1. Business rules live in `domain/`, once
 
-The REST API and the MCP tools are adapters. They verify a credential, build
-an `Identity`, and translate a result. They do not validate names, check
-ownership or compare versions.
+The REST API and the MCP tools are adapters. They verify a credential,
+exchange it for an internal token, call the Device Service, and translate a
+result. They do not validate names, check ownership or compare versions.
 
 A rule implemented in an adapter is a rule the other surface does not have.
 
@@ -72,13 +72,13 @@ nothing usable to continue with.
 
 ### 3. Never write a side effect inside a transaction that is about to abort
 
-This has caused three separate bugs here:
+Three places depend on this:
 
-- an audit record of a rejected write, erased by the rollback carrying the
-  rejection;
-- refresh-token reuse detection revoking a family inside the transaction that
-  then aborted, so a detected theft revoked nothing;
-- a grant created without the tokens meant to accompany it.
+- the audit record of a rejected write, which the rollback carrying the
+  rejection would erase;
+- refresh-token reuse detection, whose revocation the aborting transaction
+  would undo, so a detected theft would revoke nothing;
+- a grant and its first tokens, which must be created together or not at all.
 
 If something must survive a refusal, do it **after** the transaction, in its
 own.
@@ -100,8 +100,8 @@ errors. Codes go in `_meta['iot/error']`.
 
 ### 5. Migrations are append-only
 
-Add a file to `MIGRATIONS` in `server/src/db/migrations.ts`. Never edit one
-that has shipped.
+Add an entry to `MIGRATIONS` in `server/src/db/migrations.ts`. Never edit one
+that has been applied anywhere.
 
 ---
 
@@ -114,22 +114,22 @@ error` states what must be true. Prefer that to `test control 409`.
 inverse command was sent, that nothing was mutated, that no second code was
 minted.
 
-**Reproduce before fixing.** Every defect in this repository's history was
-demonstrated against a running server before a line changed, and the
-regression test carries a comment saying what went wrong. Several read as
-short incident reports. That is the most useful thing such a test can carry.
+**Reproduce before fixing.** Demonstrate a defect against a running server
+before changing a line, and give the regression test a comment saying what
+goes wrong without it.
 
-**Some things need a harness, not a unit test.** Two interop bugs shipped past
-a fully green suite:
+**Some things need a harness, not a unit test.** Tests that drive your own
+endpoints cannot tell you whether a real client can navigate them:
 
-- `npm run client-check` found that error results were unreadable to a real
-  MCP client.
-- `tools/mock-host` found a handler-registry collision that made "Show all"
-  silently do nothing.
+- `npm run client-check` drives the server with the official MCP SDK client,
+  which is what shows whether an error result is readable to a real client.
+- `tools/mock-host` renders a view and logs its messages, which is what shows
+  whether "Show all" actually goes fullscreen.
+- `npm run host-check` puts the server in front of Claude or ChatGPT;
+  record what you see in [`docs/host-compatibility.md`](./docs/host-compatibility.md).
 
 If you are changing the bridge, the views, or anything a host consumes, use
-them. Tests that drive your own endpoints cannot tell you whether a real
-client can navigate them.
+them.
 
 ---
 
@@ -137,8 +137,6 @@ client can navigate them.
 
 Explain **why**, not what — the diff already says what. Where a change fixes a
 defect, describe the failure concretely enough that someone can picture it.
-The commit history here is written that way and is worth skimming for the
-house style.
 
 Keep a pull request to one coherent change. If you find something unrelated on
 the way, note it rather than folding it in.
@@ -151,6 +149,8 @@ Update it in the same change, not afterwards:
 
 - a new endpoint or tool → [`docs/architecture.md`](./docs/architecture.md)
   and the README's API tables
+- anything about tokens, clients or keys →
+  [`docs/authentication-architecture.md`](./docs/authentication-architecture.md)
 - a new flow → [`docs/sequence-diagrams.md`](./docs/sequence-diagrams.md)
 - moving where something happens → the "Where to change things" table in
   [`docs/code-flow.md`](./docs/code-flow.md)
@@ -174,7 +174,7 @@ specification changed first.
 Please do not open a public issue. Contact the maintainer directly.
 
 The security model is described in
-[Architecture §5](./docs/architecture.md#5-authentication-two-systems-deliberately-separate)
-and §6. Findings against the OAuth server, the MCP authorization gate, or the
-view sandbox are especially welcome — several serious defects have already
-been found in exactly those places.
+[the authentication architecture](./docs/authentication-architecture.md),
+including its threat model and risk-to-control matrix. Findings against the
+OAuth server, the MCP authorization gate, token exchange, or the view sandbox
+are especially welcome.

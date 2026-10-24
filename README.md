@@ -24,11 +24,10 @@ graph LR
 | --- | --- |
 | [`server/`](./server) | Node + TypeScript. REST API, OAuth 2.1 authorization server, MCP server, four MCP App views |
 | [`ios/`](./ios) | SwiftUI app for iPhone and iPad |
-| [`spike/`](./spike) | The phase 0 feasibility spike, superseded and kept as a record |
 | [`requirement.md`](./requirement.md) | The specification everything implements |
-| [`docs/`](./docs) | Architecture, code flow, sequence diagrams, testing |
+| [`docs/`](./docs) | Architecture, authentication, code flow, sequence diagrams, testing, host compatibility |
 
-Roughly 21,900 lines, 346 tests.
+339 tests.
 
 ---
 
@@ -41,7 +40,7 @@ Xcode 16+ only if you want the iOS app, which runs on iOS 18 and later.
 cd server
 npm install
 npm start            # http://localhost:4000
-npm test             # 286 tests
+npm test             # 279 tests
 ```
 
 Nothing to provision. The store is [PGlite](https://pglite.dev) — real
@@ -52,25 +51,16 @@ them; `npm run test:pg` runs the suite there.
 <details>
 <summary><b>Try it from the command line</b></summary>
 
-The password endpoints below are deprecated — the app now signs in through
-the browser — but they still answer, which keeps this short.
-
 ```bash
-# create an account
-curl -s -X POST localhost:4000/v1/auth/signup \
-  -H 'content-type: application/json' \
-  -d '{"username":"sam","password":"correct horse battery staple"}'
-
-# add a device, then switch it on
-TOKEN=...
-curl -s -X POST localhost:4000/v1/devices \
-  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"name":"Bedroom Lamp"}'
-
-curl -s -X PUT localhost:4000/v1/devices/DEVICE_ID/state \
-  -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"state":"on","expectedVersion":1}'
+npm start                 # in one terminal
+npm run client-check      # in another
 ```
+
+`client-check` connects with the official MCP SDK client: it discovers the
+authorization server from the `401`, registers, signs in on the hosted page,
+exchanges the code with PKCE, then adds a device and switches it. The REST API
+cannot be driven with `curl`: it accepts only DPoP-bound tokens, each request
+signed by the client's key.
 </details>
 
 <details>
@@ -99,12 +89,13 @@ xcodebuild -project IoTSwitch.xcodeproj -scheme IoTSwitch \
 cd server && npm run host-check
 ```
 
-Opens a tunnel, starts the server told the origin it is reachable at, verifies
-the whole discovery chain over real HTTPS, and prints a connector URL.
+Opens a tunnel, starts the server with the tunnel's origin as its public URL,
+verifies the whole discovery chain over real HTTPS, and prints a connector URL.
 
 Add that URL in Claude or ChatGPT under **Settings → Connectors**. Do it on
 web or desktop — a custom connector must be added there before it appears on
-mobile. Then ask for your devices.
+mobile. Then ask for your devices. What each host does is recorded in
+[host compatibility](./docs/host-compatibility.md).
 </details>
 
 <details>
@@ -115,9 +106,8 @@ npm start
 node tools/mock-host/run.mjs      # prints a URL
 ```
 
-A mock MCP Apps host that renders any view with a live message log. It exists
-because the views cannot otherwise be looked at — and it has found bugs no
-unit test did.
+A mock MCP Apps host that renders any view with a live message log, so a view
+can be looked at and its messages watched without a real host.
 </details>
 
 ---
@@ -127,7 +117,7 @@ unit test did.
 ```
 POST /v1/devices/…/state  ─┐
                            ├─→  token exchange  ─→  Device Service  ─→  PostgreSQL
-MCP tools/call             ─┘   (token B, 60 s)     validation · ownership · versions · audit
+MCP tools/call             ─┘   (internal, 60 s)    validation · ownership · versions · audit
 ```
 
 Both front doors call the **same** Device Service, which takes a verified
@@ -152,6 +142,7 @@ a conversation, a tool argument, a view, or a native screen. The app's tokens
 are bound to a key in its Secure Enclave, so a copied token is useless.
 
 **→ [Architecture](./docs/architecture.md)** ·
+**[Authentication](./docs/authentication-architecture.md)** ·
 **[Code flow](./docs/code-flow.md)** ·
 **[Sequence diagrams](./docs/sequence-diagrams.md)** ·
 **[Testing](./docs/testing.md)**
@@ -170,21 +161,24 @@ them.
 | `PUT /v1/devices/{id}/state` | `{ state, expectedVersion }` |
 | `POST /v1/devices` | `{ name }`, optional `Idempotency-Key` |
 
-Plus `/v1/auth/me`, the OAuth endpoints (including `/par` for the iOS app),
-and `/mcp`. The password endpoints `/v1/auth/{signup,login,refresh,logout}`
-are deprecated.
+Plus `GET /v1/me`, the OAuth endpoints (`/authorize`, `/par`, `/token`,
+`/revoke`, `/register`), the account pages (`/account`), and `/mcp`. Every API
+request carries a DPoP-bound token and a fresh proof.
 
 ### MCP tools
 
 | Tool | Scope | View |
 | --- | --- | --- |
-| `list_devices` | `devices:read` | `ui://iot/devices.html` |
-| `get_device` | `devices:read` | `ui://iot/device.html` |
+| `list_devices` | `devices:read` | `ui://iot/devices.<hash>.html` |
+| `get_device` | `devices:read` | `ui://iot/device.<hash>.html` |
 | `control_device` | `devices:control` | — |
 | `add_device` | `devices:create` | — |
 | `get_auth_status` | public | — |
-| `show_auth` | public | `ui://iot/auth.html` |
-| `show_add_device` | public | `ui://iot/add-device.html` |
+| `show_auth` | public | `ui://iot/auth.<hash>.html` |
+| `show_add_device` | public | `ui://iot/add-device.<hash>.html` |
+
+Each view's URI carries a hash of its content, so a host that caches templates
+by URI always fetches changed code.
 
 ---
 
@@ -202,21 +196,17 @@ are deprecated.
 | `REQUIRE_OFFLINE_ACCESS_FOR_REFRESH` | `false` | Issue refresh tokens only to clients that ask for `offline_access` |
 | `ARGON2_MEMORY_KIB`, `ARGON2_TIME_COST` | `65536`, `3` | Password hashing cost |
 | `SIGNING_KEYS` | the key file | JSON array of private P-256 JWKs, current first, that sign internal tokens. Published at `/.well-known/jwks.json` |
-| `WRITE_BUDGETS` | `report` | `enforce` refuses writes over budget: 6 switches a minute per device, 20 a minute and 10 new devices an hour per grant |
+| `WRITE_BUDGETS` | `enforce` | Refuses writes over budget: 6 switches a minute per device, 20 a minute and 10 new devices an hour per grant. `report` logs them instead |
 | `DATABASE_PATH` | `./.data` | PGlite's directory. Delete it to reset |
 | `DATABASE_URL` | unset | A PostgreSQL server instead of PGlite. `DATABASE_SCHEMA`, `DATABASE_POOL_SIZE` (10) tune it |
 | `REDIS_URL` | unset | Share rate limits, DPoP replay ids, sealed refresh responses and revocations across processes. Unreachable Redis means 503s, never a free pass |
-| `KMS_PROVIDER` | unset | `local`: key material from an envelope file encrypted under a KMS key, signing keys held by the KMS. Cloud providers wait on gate G4 |
+| `KMS_PROVIDER` | unset | `local`: key material from an envelope file encrypted under a KMS key, signing keys held by the KMS. A cloud provider is an adapter implementing `Kms` |
 | `METRICS_PORT` | unset | Prometheus metrics on this port, loopback only (`METRICS_HOST`) |
-| `ACCESS_TOKEN_TTL_SECONDS` | `900` | Legacy first-party sessions |
-| `REFRESH_TOKEN_TTL_SECONDS` | `2592000` | Legacy first-party sessions |
 | `AUTH_RATE_LIMIT_PER_MINUTE` | `20` | Credential submissions per address |
 | `TRUST_PROXY` | off | Only behind a proxy you control |
 | `AUTHORIZE_VIEW_RATE_LIMIT_PER_MINUTE` | `60` | Authorization page views per address |
 | `REFRESH_GRACE_SECONDS` | `30` | A duplicate refresh inside this window gets the identical response instead of revoking the grant |
 | `NATIVE_ACCESS_TOKEN_TTL_SECONDS` | `600` | The iOS app's DPoP-bound access tokens. Hosts get an hour |
-| `LEGACY_FIRST_PARTY_AUTH` | `deprecated` | The old password endpoints. `deprecated` adds `Deprecation` and `Sunset` headers; `off` answers sign-up, log-in and refresh with `410` |
-| `DPOP_REQUIRED_FOR_API` | `off` | `on`: the REST API accepts only DPoP-bound tokens |
 | `FIRST_PARTY_REDIRECT_URIS` | the app scheme and `API_BASE_URL/oauth/callback` | The iOS app's OAuth callbacks |
 | `APPLE_TEAM_ID`, `APPLE_BUNDLE_ID` | unset, `com.example.IoTSwitch` | With a team, publish `/.well-known/apple-app-site-association` for the universal-link callback |
 | `CHATGPT_TOOL_CHALLENGE` | off | `trusted-header`: answer ChatGPT's unauthenticated calls with a tool-level challenge. Needs `TRUST_PROXY` and a proxy that sets `X-Verified-Client: chatgpt` from ChatGPT's mTLS certificate and strips it otherwise |
@@ -225,26 +215,23 @@ are deprecated.
 
 ## Status
 
-346 tests pass (286 server, 60 iOS). Run on PostgreSQL and Redis,
-`npm run acceptance` reports **34 of 47** acceptance criteria proven, 10
-partial, 3 open; on PGlite alone the criteria that need the real backends say
-so instead. The phase 4 exit review — load and failover drills — is recorded in
-the [implementation plan](./docs/authentication-architecture/implementation-plan.md). Nineteen of the forty-seven (AC-29 to AC-47) come from the
-[authentication redesign](./docs/authentication-architecture/authentication-architecture.md)
-rather than the specification.
+339 tests pass (279 server, 60 iOS), on PGlite and on PostgreSQL 17 with
+Redis 7. Run on the real backends, `npm run acceptance` reports **36 of 47**
+acceptance criteria proven, 8 partial and 3 open. Load and failover results
+are in [Testing](./docs/testing.md#load-and-failover).
 
-Eight of the rest need a host account or a physical device — whether a host
-renders the views, how many rows survive an inline card, whether every write
-is confirmed, iPad. The report names each gap rather than letting a green
-suite imply otherwise. They close in
-[`spike/FINDINGS.md`](./spike/FINDINGS.md).
+The rest need a host account or a physical device: Claude on iPhone, how many
+rows fit in an inline card on a phone, whether a host asks again in a new
+conversation, iPad, a platform passkey, and an Apple Developer team for the
+universal-link callback. The report names each gap rather than letting a green
+suite imply otherwise. Host observations so far are in
+[host compatibility](./docs/host-compatibility.md).
 
 Known limits are listed in
-[Architecture §10](./docs/architecture.md#10-known-limits). The one worth
-knowing before you rely on anything: **there is no deployment.** PostgreSQL,
-Redis, a KMS interface and a four-process split with mutual TLS all exist and
-are tested, but everything has run on localhost, containers or a tunnel, and
-the cloud provider is still undecided.
+[Architecture §10](./docs/architecture.md#10-known-limits). PostgreSQL, Redis,
+a KMS interface and a four-process split with mutual TLS all exist and are
+tested; a production deployment needs a cloud KMS adapter and the platform to
+run on.
 
 ---
 

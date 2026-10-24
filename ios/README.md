@@ -45,7 +45,7 @@ The rule worth keeping: **views hold no logic and no network calls.** Every
 decision lives in a view model, which is why the switch behaviour in section
 5.6 can be tested exhaustively without a simulator UI test.
 
-## Signing in without a password field
+## Signing in
 
 The app never sees a password. **Log In** and **Sign Up** do the same thing,
 with a hint:
@@ -100,12 +100,10 @@ Three outcomes deserve attention:
 ## Verified against the real backend
 
 Beyond the 60 unit tests, the core flows were driven in the Simulator against
-a running server. Browser sign-in was driven on 18 October 2026: sign-up on the
-hosted page, the callback, the DPoP-bound code exchange, the empty state, add
-device, switching it On (version 1 → 2), and log out. The server's database
-showed one `iot-switch-ios` grant, bound to a key, and revoked on logout.
-Earlier runs, with the password-field app, covered session persistence across a
-relaunch and a genuine 409 conflict being reconciled.
+a running server on 18 October 2026: sign-up on the hosted page, the callback,
+the DPoP-bound code exchange, the empty state, add device, switching it On
+(version 1 → 2), and log out. The server's database showed one `iot-switch-ios`
+grant, bound to a key, and revoked on logout.
 
 Notes for anyone repeating that:
 
@@ -129,5 +127,5 @@ Notes for anyone repeating that:
 - The Secure Enclave path runs only on a physical device. The Simulator
   exercises the software fallback.
 - iPad renders correctly but the layout is the iPhone one scaled up; section
-  5.1's "appropriately sized presentation on iPad" is not yet done.
+  5.1's "appropriately sized presentation on iPad" is not implemented.
 - No UI tests. The view models are covered; the views are not.

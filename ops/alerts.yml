@@ -11,7 +11,7 @@ groups:
         labels: { severity: page }
         annotations:
           summary: A refresh token was replayed and its grant revoked
-          runbook: docs/authentication-architecture/authentication-architecture.md (leak response)
+          runbook: docs/authentication-architecture.md (logs and telemetry, revocation)
 
       - alert: DpopReplayBurst
         # One replayed proof is a client retry bug; many are someone replaying.

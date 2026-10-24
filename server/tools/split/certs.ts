@@ -1,5 +1,5 @@
 /**
- * A local CA and workload certificates for profile M. Plan 4.7.
+ * A local CA and workload certificates for profile M.
  *
  *   npm run certs -- <directory>
  *

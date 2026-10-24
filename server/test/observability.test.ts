@@ -1,5 +1,5 @@
 /**
- * The logger, the security metrics and the alerts. Plan 4.8.
+ * The logger, the security metrics and the alerts.
  */
 
 import test, { after, before } from 'node:test';

@@ -251,14 +251,13 @@ test('a narrower scope request is honoured exactly', async () => {
   assert.equal(verified.ok === false ? verified.reason : '', 'insufficient_scope');
 });
 
-/* --------------------------------------------------- the forged-context bug */
+/* ------------------------------------------------- forged contexts */
 
 test('an authorization context cannot be forged by the browser', async () => {
-  // An earlier revision of the spike round-tripped the authorization context
-  // through the login form as unsigned base64, which let anyone name their own
-  // redirect_uri and PKCE challenge, walk a victim through a genuine login
-  // page, and collect a live code. The browser now carries only an opaque id
-  // that has to already exist here.
+  // An authorization context round-tripped through the login form as
+  // unsigned base64 would let anyone name their own redirect_uri and PKCE
+  // challenge, walk a victim through a genuine login page, and collect a live
+  // code. The browser carries only an opaque id that has to already exist here.
   const forged = Buffer.from(JSON.stringify({
     clientId: 'https://attacker.example/cimd.json',
     redirectUri: 'https://attacker.example/steal',
@@ -305,6 +304,43 @@ test('a wrong password re-renders the page and issues nothing', async () => {
   assert.match(html, /Invalid username or password/);
   assert.doesNotMatch(html, /code=/);
   assert.equal(browser.cookies.has('as_session'), false, 'no session is started');
+});
+
+test('an unknown username fails exactly like a wrong password', async () => {
+  const existing = await authorizeAs(h.base);
+  const attempt = async (username: string) => {
+    const browser = new Browser(h.base);
+    const login = await openLogin(browser);
+    const response = await browser.post('/login', {
+      pending: login.pending, csrf: login.csrf, mode: 'login', username, password: 'definitely-wrong-password'
+    });
+    const html = await response.text();
+    return html.match(/<p class="error" role="alert">([^<]*)<\/p>/)?.[1];
+  };
+  const wrongPassword = await attempt(existing.username);
+  const unknownUser = await attempt(`nobody${Date.now()}`);
+  assert.ok(wrongPassword);
+  // Identical, so the page cannot be used to discover which names exist.
+  assert.equal(wrongPassword, unknownUser);
+});
+
+test('a taken username or a weak password re-renders sign-up and creates nothing', async () => {
+  const existing = await authorizeAs(h.base);
+  for (const [username, password, message] of [
+    [existing.username.toUpperCase(), 'correct horse battery staple', /already taken/],
+    [`weak${Date.now()}`, 'short', /password/i]
+  ] as const) {
+    const browser = new Browser(h.base);
+    const login = await openLogin(browser);
+    const response = await browser.post('/login', { pending: login.pending, csrf: login.csrf, mode: 'signup', username, password });
+    assert.equal(response.headers.get('location'), null, 'no redirect onward');
+    const html = await response.text();
+    assert.match(html, message);
+    assert.doesNotMatch(html, new RegExp(password === 'short' ? 'value="short"' : 'correct horse'), 'the password is never echoed');
+    assert.equal(browser.cookies.has('as_session'), false, 'no session is started');
+  }
+  const { rows } = await h.db.query<{ n: number }>("SELECT count(*)::int AS n FROM accounts WHERE username LIKE 'weak%'");
+  assert.equal(rows[0]!.n, 0);
 });
 
 test('cancelling returns access_denied and mints no code', async () => {
@@ -450,12 +486,12 @@ test('loopback redirect URIs match with the port ignored', () => {
   assert.ok(!redirectUriAllowed('http://127.0.0.1:1/cb#fragment', ['http://127.0.0.1:1/cb']));
 });
 
-/* ------------------------------------------------- review regression tests */
+/* ---------------------------------------------- replay and burned codes */
 
 test('a code burned by a failed exchange revokes nothing', async () => {
-  // The replay path used to revoke "the most recent grant for this account and
-  // client", which is a guess. A code that failed PKCE never produced a grant,
-  // so guessing would have taken down an unrelated, healthy one.
+  // Revoking "the most recent grant for this account and client" on replay
+  // would be a guess. A code that failed PKCE never produced a grant, so
+  // guessing would take down an unrelated, healthy one.
   const healthy = await authorizeAs(h.base, { username: 'burn-victim' });
   const healthyTokens = await exchange(h.base, healthy);
   assert.equal(healthyTokens.status, 200);
@@ -582,4 +618,22 @@ test('the page styles itself only through its nonced stylesheet', async () => {
     // An inline style attribute is not covered by a nonce and would be blocked.
     assert.doesNotMatch(html, /\sstyle="/);
   }
+});
+
+test('the sweep removes expired tokens and keeps live ones', async () => {
+  const { pruneExpiredOAuth } = await import('../src/oauth/store.ts');
+  const live = await exchange(h.base, await authorizeAs(h.base));
+  const dead = await exchange(h.base, await authorizeAs(h.base));
+  const deadToken = await verifyOAuthAccessToken(h.db, dead.body.access_token);
+  assert.ok(deadToken.ok);
+  await h.db.query(
+    `UPDATE oauth_access_tokens SET expires_at = now() - interval '1 second' WHERE grant_id = $1`, [deadToken.grantId]
+  );
+
+  await pruneExpiredOAuth(h.db);
+  const { rows } = await h.db.query<{ n: number }>(
+    'SELECT count(*)::int AS n FROM oauth_access_tokens WHERE grant_id = $1', [deadToken.grantId]
+  );
+  assert.equal(rows[0]!.n, 0, 'the expired access token is gone');
+  assert.ok((await verifyOAuthAccessToken(h.db, live.body.access_token)).ok, 'a live one is untouched');
 });

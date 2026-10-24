@@ -1,5 +1,5 @@
 /**
- * Load test for the phase 4 exit review: the tool-call and refresh paths.
+ * Load test for the tool-call and refresh paths.
  *
  *   npm start                       # with DATABASE_URL and REDIS_URL for the real thing
  *   npm run load -- [base] [users] [seconds] [requests per second per user]
@@ -13,8 +13,8 @@
  * not the service. Reports throughput, latency percentiles, rate-limited
  * answers, and every other non-success by status.
  *
- * LOAD_TIMELINE=<seconds> also prints status counts per interval, for the
- * failover drill: stop Redis or PostgreSQL mid-run and watch what the server
+ * LOAD_TIMELINE=<seconds> also prints status counts per interval, for a
+ * failover run: stop Redis or PostgreSQL mid-run and watch what the server
  * answers while it is gone and after it returns.
  *
  * For profile M, where the MCP endpoint is its own host, set LOAD_MCP_URL to
@@ -22,7 +22,9 @@
  *
  * Raise AUTH_RATE_LIMIT_PER_MINUTE and AUTHORIZE_VIEW_RATE_LIMIT_PER_MINUTE on
  * the server first: signing in many users from one address is exactly what
- * those limits stop.
+ * those limits stop. Set WRITE_BUDGETS=report too, or the per-device budget
+ * (six switches a minute) refuses most switches and the run measures the
+ * refusal path.
  */
 
 import { randomBytes } from 'node:crypto';

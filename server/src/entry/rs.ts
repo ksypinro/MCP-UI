@@ -1,5 +1,5 @@
 /**
- * Profile M: the MCP resource server. Plan 4.7.
+ * Profile M: the MCP resource server.
  * Needs AUTH_INTERNAL_URL, DEVICE_SERVICE_URL, REDIS_URL, TLS_* (an mcp-rs certificate).
  */
 

@@ -17,8 +17,8 @@ function protectedResourceMetadata() {
     authorization_servers: [ISSUER],
     scopes_supported: SCOPES_SUPPORTED,
     bearer_methods_supported: ['header'],
-    // DPoP is accepted from any host that offers it, and not required: no
-    // major host is known to send it yet.
+    // DPoP is accepted from any host that offers it, and not required:
+    // neither Claude nor ChatGPT sends it.
     dpop_signing_alg_values_supported: DPOP_ALGORITHMS,
     dpop_bound_access_tokens_required: false
   };

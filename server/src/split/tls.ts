@@ -1,5 +1,5 @@
 /**
- * Mutual TLS between the components of profile M. Plan 4.7.
+ * Mutual TLS between the components of profile M.
  *
  * Every internal connection is TLS in both directions, against a private CA.
  * A peer is identified by the SPIFFE-style URI in its certificate

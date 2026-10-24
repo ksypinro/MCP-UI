@@ -1,12 +1,12 @@
 /**
  * How an edge adapter obtains internal tokens: exchange once, reuse while
  * the token has more than ten seconds left, forget it the moment its grant is
- * revoked. Plan 2.5.
+ * revoked.
  *
  * One client per adapter, holding that adapter's workload. The cache lives
  * in memory only and is keyed by grant and scope, so two people never share
  * an entry and one scope never stands in for another. Each entry remembers
- * its account and client too, so revoking either drops it (plan 4.4).
+ * its account and client too, so revoking either drops it.
  */
 
 import type { Db } from './db/index.ts';

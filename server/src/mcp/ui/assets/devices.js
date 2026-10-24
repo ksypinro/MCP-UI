@@ -15,10 +15,9 @@
   /**
    * How many rows to show inline before offering fullscreen.
    *
-   * NOT MEASURED. Four is Claude's published guidance for an inline card
-   * ("roughly four to five data points"), not an observation of what actually
-   * fits on a device. Question 2 in spike/FINDINGS.md exists to replace this
-   * with a real number; when it is answered, change this constant.
+   * Four is Claude's published guidance for an inline card ("roughly four to
+   * five data points"). A desktop browser has room for more; a phone is where
+   * the budget binds. docs/host-compatibility.md records what each host shows.
    */
   var INLINE_ROW_BUDGET = 4;
 

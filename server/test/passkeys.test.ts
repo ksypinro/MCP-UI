@@ -1,5 +1,5 @@
 /**
- * Passkeys on the authorization server. Plan 4.5, AC-45.
+ * Passkeys on the authorization server. AC-45.
  *
  * The ceremonies run end to end over HTTP with a software authenticator
  * (webauthn-helpers.ts) that signs with a real P-256 key, so SimpleWebAuthn

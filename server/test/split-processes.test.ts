@@ -1,5 +1,5 @@
 /**
- * Profile M as four real processes. Plan 4.7.
+ * Profile M as four real processes.
  *
  * Starts the authorization server, the MCP resource server, the API gateway
  * and the Device Service from their entry points, each with its own

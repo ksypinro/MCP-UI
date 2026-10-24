@@ -1,5 +1,5 @@
 /**
- * When each grant was last used, for the connected-apps page (plan 4.6).
+ * When each grant was last used, for the connected-apps page.
  */
 
 import type { Queryable } from '../db/index.ts';

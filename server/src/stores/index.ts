@@ -1,7 +1,7 @@
 /**
  * The shared state a server needs beyond its database: rate-limit and budget
  * counters, used DPoP proof ids, sealed refresh responses, and revocation
- * events. Plan 4.2 and 4.4.
+ * events.
  *
  * In memory (the default) each process keeps its own, which is right for one
  * process and for tests. With REDIS_URL every process shares them, which is

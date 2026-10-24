@@ -1,5 +1,5 @@
 /**
- * Fifty callers at once. Plan 4.1, AC-43.
+ * Fifty callers at once. AC-43.
  *
  * Run with `npm run test:pg` these execute on a PostgreSQL server through a
  * pool, so the fifty statements genuinely overlap and the guarantees below

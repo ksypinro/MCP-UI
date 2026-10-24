@@ -1,5 +1,5 @@
 /**
- * Profile M: the authorization server. Plan 4.7.
+ * Profile M: the authorization server.
  *
  * Public: OAuth, the hosted sign-in and account pages, JWKS (PORT).
  * Internal, mTLS only: introspection and token exchange (INTERNAL_PORT).
@@ -8,7 +8,6 @@
 
 import { createDb } from '../db/index.ts';
 import { authServerRouter, baseApp, finishApp } from '../http/app.ts';
-import { pruneExpired } from '../domain/sessions.ts';
 import { pruneExpiredOAuth } from '../oauth/store.ts';
 import { PORT } from '../config.ts';
 import { infrastructureFromEnvironment } from '../stores/index.ts';
@@ -31,7 +30,7 @@ const internalPort = Number(process.env.INTERNAL_PORT ?? 9443);
 const internal = mtlsServer(tls, internalAuthApp(db)).listen(internalPort);
 
 const sweep = setInterval(() => {
-  void Promise.all([pruneExpired(db), pruneExpiredOAuth(db)]).catch((error) => log('error', 'prune_failed', { error }));
+  void pruneExpiredOAuth(db).catch((error) => log('error', 'prune_failed', { error }));
 }, 60 * 60 * 1000);
 sweep.unref();
 

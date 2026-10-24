@@ -1,6 +1,5 @@
 /**
- * The account pages on the authorization server: passkeys (plan 4.5) and
- * connected apps (plan 4.6).
+ * The account pages on the authorization server: passkeys and connected apps.
  *
  * They use the authorization server's own browser session and nothing else.
  * No token issued to any application is accepted here, so an application can
