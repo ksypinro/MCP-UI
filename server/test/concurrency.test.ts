@@ -1,17 +1,13 @@
 /**
  * Acceptance criteria AC-09 and AC-10.
  *
- * An honest note on what these prove. PGlite is real PostgreSQL, so the UNIQUE
- * constraint and the conditional UPDATE behave exactly as they would on a
- * server — but it runs in-process and serialises queries, so the two callers
- * below never execute at literally the same instant. What is demonstrated is
- * that the *logic* is correct when two callers start from the same observed
- * state: one wins, one is refused, and no duplicate or lost update results.
- *
- * What is not yet demonstrated is behaviour under genuine row-level
- * contention on a multi-connection server. That requires pointing these same
- * tests at a real PostgreSQL, which is a change of one line in src/db. The
- * tests are written to need no modification when that happens.
+ * What these prove depends on the driver. Under `npm test` they run on
+ * PGlite, which serialises queries: the callers never execute at the same
+ * instant, so what is demonstrated is that the *logic* is correct when they
+ * start from the same observed state. Under `npm run test:pg` they run on a
+ * PostgreSQL server through a connection pool, where the statements genuinely
+ * overlap and the outcome rests on row locks and constraints. CI runs both.
+ * The fifty-way versions are in contention.test.ts.
  */
 
 import test from 'node:test';

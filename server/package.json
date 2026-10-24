@@ -10,20 +10,32 @@
     "typecheck": "tsc --noEmit",
     "acceptance": "node acceptance/report.mjs",
     "host-check": "node tools/host-check/run.mjs",
-    "client-check": "node tools/client-check/run.mjs"
+    "client-check": "node tools/client-check/run.mjs",
+    "test:pg": "DATABASE_URL=${TEST_DATABASE_URL:-postgres://iotsw:iotsw@localhost:55432/iotsw} DATABASE_ISOLATION=schema TEST_REDIS_URL=${TEST_REDIS_URL:-redis://localhost:56379} node --test test/*.test.ts",
+    "keys": "node tools/keys/run.ts",
+    "certs": "node tools/split/certs.ts",
+    "start:as": "node src/entry/as.ts",
+    "start:rs": "node src/entry/rs.ts",
+    "start:gw": "node src/entry/gw.ts",
+    "start:ds": "node src/entry/ds.ts",
+    "load": "node tools/load/run.ts"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.5.8",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@node-rs/argon2": "^2.0.2",
+    "@simplewebauthn/server": "14.0.3",
     "express": "^5.1.0",
     "ipaddr.js": "2.2.0",
     "jose": "6.2.12",
+    "pg": "8.23.1",
+    "redis": "6.3.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.20.4",
+    "@types/pg": "8.23.1",
     "typescript": "^5.9.3"
   }
 }

@@ -21,6 +21,12 @@ export interface Criterion {
   ios?: string[];
   /** What this criterion still needs that no test can supply. */
   gap?: string;
+  /**
+   * Backends the evidence must have run on. Without them the criterion is
+   * reported partial: the tests pass on PGlite and in-memory stores, but what
+   * they claim is only shown on the real thing.
+   */
+  requires?: Array<'postgres' | 'redis'>;
 }
 
 export const CRITERIA: Criterion[] = [
@@ -147,7 +153,8 @@ export const CRITERIA: Criterion[] = [
       'a password is stored hashed and never trimmed',
       'tokens are stored hashed, not in the clear',
       'no view can hold a token, and none renders user data as markup',
-      'sign-up returns an account and a session, and echoes no secrets'
+      'sign-up returns an account and a session, and echoes no secrets',
+      'logging a request with an Authorization header writes no token'
     ]
   },
   {
@@ -263,8 +270,7 @@ export const CRITERIA: Criterion[] = [
       'a replay after the successor was used revokes the grant',
       'concurrent redemptions of one code yield exactly one token'
     ],
-    gap: 'Proven on PGlite, which runs one statement at a time. Row-lock '
-      + 'behaviour under real contention needs a Postgres server (plan 4.1).'
+    requires: ['postgres']
   },
   {
     id: 'AC-31', scenario: 'Tokens are stored only as keyed hashes',
@@ -272,7 +278,9 @@ export const CRITERIA: Criterion[] = [
       'tokens are stored only as keyed hashes',
       'a token names its kind and carries a checksum',
       'tokens issued under a retired pepper keep working until they expire',
-      'a stored hash cannot be checked without the pepper'
+      'a stored hash cannot be checked without the pepper',
+      'the key file holds only ciphertext and KMS key ids',
+      'rotating the pepper keeps tokens from before it working'
     ]
   },
   {
@@ -389,5 +397,57 @@ export const CRITERIA: Criterion[] = [
     gap: 'Deprecated, not yet off: the legacy endpoints answer with Deprecation '
       + 'and Sunset headers until the browser sign-in build has shipped. Then '
       + 'LEGACY_FIRST_PARTY_AUTH=off and DPOP_REQUIRED_FOR_API=on.'
+  },
+  {
+    id: 'AC-43', scenario: 'Concurrency guarantees hold on real Postgres under contention',
+    evidence: [
+      'fifty concurrent refreshes of one token rotate it once',
+      'fifty concurrent redemptions of one code issue tokens at most once',
+      'fifty concurrent switches from one version',
+      'fifty concurrent creates of one name make one device'
+    ],
+    requires: ['postgres']
+  },
+  {
+    id: 'AC-44', scenario: 'Revocation propagates across processes before the next request',
+    evidence: [
+      'redis: a revocation in one process reaches every other',
+      'redis: revoking a grant in one process empties the cache in another',
+      "a revocation empties the edge's introspection cache at once",
+      'an MCP host signs a person in and controls a device through four processes'
+    ],
+    requires: ['postgres', 'redis']
+  },
+  {
+    id: 'AC-45', scenario: 'Passkey login is phishing-resistant (RP ID bound)',
+    evidence: [
+      'a passkey made for another site, or answered at another origin, is refused',
+      'a passkey can be added from the account page, then used to sign in',
+      'a passkey completes an authorization in flight',
+      'a challenge answers once',
+      'an authenticator whose counter stops advancing is refused'
+    ],
+    gap: 'Run with a software authenticator that signs real WebAuthn responses. '
+      + 'A platform passkey in Safari and Chrome, on a device, is the exit review.'
+  },
+  {
+    id: 'AC-46', scenario: 'Users can see and revoke every connected app',
+    evidence: [
+      'every connected app is listed with what it can do',
+      'disconnecting an app makes its token fail on the next call',
+      "another person's app cannot be disconnected",
+      'sign out everywhere ends the hosts, the iPhone app',
+      'changing the password signs out everything else'
+    ]
+  },
+  {
+    id: 'AC-47', scenario: 'Store outages fail closed',
+    evidence: [
+      'redis: an unreachable store refuses with 503 rather than letting requests through',
+      'an unreachable authorization server is a 503 at the edge, never a pass',
+      'start-up fails closed on a tampered file, another KMS, or a missing key'
+    ],
+    requires: ['redis'],
+    gap: 'The failover drill — Redis stopped under load — is the phase 4 exit review.'
   }
 ];

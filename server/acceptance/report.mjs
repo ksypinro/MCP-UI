@@ -36,7 +36,9 @@ function runSuite() {
         // Subtests are indented; only top-level results are criteria evidence.
         const match = /^(not ok|ok) \d+ - (.+?)\s*$/.exec(line);
         if (!match) continue;
-        results.set(match[2].replace(/\s+#.*$/, ''), match[1] === 'ok');
+        // A skipped test is reported "ok … # SKIP": it proves nothing.
+        const outcome = match[1] !== 'ok' ? 'fail' : /#\s*SKIP\b/i.test(match[2]) ? 'skip' : 'pass';
+        results.set(match[2].replace(/\s+#.*$/, ''), outcome);
       }
       resolve(results);
     });
@@ -45,13 +47,21 @@ function runSuite() {
 
 const results = await runSuite();
 const total = results.size;
-const failed = [...results.values()].filter((passed) => !passed).length;
+const failed = [...results.values()].filter((outcome) => outcome === 'fail').length;
+const skipped = [...results.values()].filter((outcome) => outcome === 'skip').length;
+
+// Which backends this run had. Some criteria are only established on them.
+const backends = {
+  postgres: Boolean(process.env.DATABASE_URL),
+  redis: Boolean(process.env.TEST_REDIS_URL)
+};
 
 const problems = [];
 const rows = [];
 
 for (const criterion of CRITERIA) {
   let matched = 0;
+  const unproven = [];
 
   for (const fragment of criterion.evidence) {
     const hits = [...results.keys()].filter((name) => name.includes(fragment));
@@ -59,17 +69,24 @@ for (const criterion of CRITERIA) {
       problems.push(`${criterion.id}: no test matches "${fragment}"`);
     } else if (hits.length > 1) {
       problems.push(`${criterion.id}: "${fragment}" matches ${hits.length} tests; make it distinctive`);
-    } else if (!results.get(hits[0])) {
+    } else if (results.get(hits[0]) === 'fail') {
       problems.push(`${criterion.id}: evidence is failing — "${hits[0]}"`);
+    } else if (results.get(hits[0]) === 'skip') {
+      unproven.push(`skipped: "${fragment}"`);
     } else {
       matched += 1;
     }
   }
 
+  for (const backend of criterion.requires ?? []) {
+    if (!backends[backend]) unproven.push(`needs ${backend === 'postgres' ? 'npm run test:pg (PostgreSQL)' : 'Redis (TEST_REDIS_URL)'} to be established`);
+  }
+
   rows.push({
     criterion,
-    status: criterion.evidence.length === 0 ? 'open' : criterion.gap ? 'partial' : 'proven',
-    matched
+    status: criterion.evidence.length === 0 ? 'open' : criterion.gap || unproven.length > 0 ? 'partial' : 'proven',
+    matched,
+    unproven
   });
 }
 
@@ -78,10 +95,10 @@ const width = Math.max(...CRITERIA.map((criterion) => criterion.scenario.length)
 process.stdout.write('\nIoT Switch — acceptance report\n');
 process.stdout.write(`requirement.md section 12, ${CRITERIA.length} criteria\n\n`);
 
-for (const { criterion, status, matched } of rows) {
+for (const { criterion, status, matched, unproven } of rows) {
   const detail = status === 'open'
     ? 'needs a host or a device'
-    : `${matched} test${matched === 1 ? '' : 's'}${criterion.gap ? ', plus a gap below' : ''}`;
+    : `${matched} test${matched === 1 ? '' : 's'}${criterion.gap || unproven.length ? ', plus a gap below' : ''}`;
   process.stdout.write(
     `  ${criterion.id}  ${criterion.scenario.padEnd(width)}  ${status.padEnd(7)}  ${detail}\n`
   );
@@ -92,14 +109,16 @@ for (const row of rows) counts[row.status] = (counts[row.status] ?? 0) + 1;
 
 process.stdout.write(
   `\n  ${counts.proven ?? 0} proven, ${counts.partial ?? 0} partial, ${counts.open ?? 0} open`
-  + `   (${total} tests ran, ${total - failed} passed)\n`
+  + `   (${total} tests ran, ${total - failed - skipped} passed${skipped ? `, ${skipped} skipped` : ''})\n`
+  + `  backends: ${backends.postgres ? 'PostgreSQL' : 'PGlite'}, ${backends.redis ? 'Redis' : 'in-memory stores'}\n`
 );
 
-const outstanding = rows.filter((row) => row.criterion.gap);
+const outstanding = rows.filter((row) => row.criterion.gap || row.unproven.length > 0);
 if (outstanding.length > 0) {
-  process.stdout.write('\nWhat no test here can establish\n\n');
-  for (const { criterion } of outstanding) {
-    process.stdout.write(`  ${criterion.id}  ${criterion.gap}\n`);
+  process.stdout.write('\nWhat this run did not establish\n\n');
+  for (const { criterion, unproven } of outstanding) {
+    for (const reason of unproven) process.stdout.write(`  ${criterion.id}  ${reason}\n`);
+    if (criterion.gap) process.stdout.write(`  ${criterion.id}  ${criterion.gap}\n`);
   }
   process.stdout.write('\n  Host and device gaps close in spike/FINDINGS.md, with a host and a phone.\n'
     + '  Any other gap names what closes it.\n');

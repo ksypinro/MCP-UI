@@ -1,0 +1,62 @@
+# The server suite on both database drivers. Plan 4.1.
+#
+# PGlite runs every statement in turn, so it proves the logic. PostgreSQL runs
+# them at the same time, through a pool, so it proves the row locks; that leg
+# also runs every HTTP test on the Redis stores. A change has to pass both.
+name: server
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths: ['server/**', '.github/workflows/server.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [pglite, postgres]
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: iotsw
+          POSTGRES_PASSWORD: iotsw
+          POSTGRES_DB: iotsw
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U iotsw"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 25
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Tests on PGlite
+        if: matrix.database == 'pglite'
+        run: npm test
+      - name: Tests on PostgreSQL 17 and Redis 7
+        if: matrix.database == 'postgres'
+        run: npm run test:pg
+        env:
+          TEST_DATABASE_URL: postgres://iotsw:iotsw@localhost:5432/iotsw
+          TEST_REDIS_URL: redis://localhost:6379

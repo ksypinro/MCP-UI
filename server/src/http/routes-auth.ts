@@ -15,6 +15,8 @@
 
 import { Router, type RequestHandler } from 'express';
 import type { Db } from '../db/index.ts';
+import type { Infrastructure } from '../stores/index.ts';
+import type { TokenVerifier } from '../security/verifier.ts';
 import { AppError } from '../errors.ts';
 import { createAccount, getAccount, verifyCredentials } from '../domain/accounts.ts';
 import { refreshSession, revokeSession, startSession } from '../domain/sessions.ts';
@@ -43,7 +45,7 @@ function legacy(retirable: boolean): RequestHandler {
   };
 }
 
-export function authRoutes(db: Db): Router {
+export function authRoutes(db: Db, infra: Infrastructure, verifier: TokenVerifier): Router {
   const router = Router();
   router.use('/v1/auth/signup', legacy(true));
   router.use('/v1/auth/login', legacy(true));
@@ -53,7 +55,7 @@ export function authRoutes(db: Db): Router {
 
   // Spec section 7.2. Generous enough not to bite a real user retyping a
   // password, tight enough that the endpoint is not a credential oracle.
-  const limiter = rateLimit(10, 60_000);
+  const limiter = rateLimit(10, 60_000, (req) => `${req.ip ?? 'unknown'}:${req.path}`, infra.buckets);
 
   // Refresh is an authenticated routine operation performed by every client,
   // not a credential-guessing surface, so it is bucketed by the token
@@ -67,7 +69,8 @@ export function authRoutes(db: Db): Router {
       return typeof token === 'string'
         ? `refresh:${createHash('sha256').update(token).digest('hex')}`
         : `refresh-anon:${req.ip ?? 'unknown'}`;
-    }
+    },
+    infra.buckets
   );
 
   router.post('/v1/auth/signup', limiter, async (req, res) => {
@@ -86,7 +89,7 @@ export function authRoutes(db: Db): Router {
     res.json({ account, ...tokens });
   });
 
-  router.get('/v1/auth/me', authenticate(db, { required: true }), async (_req, res) => {
+  router.get('/v1/auth/me', authenticate(verifier, { required: true, replay: infra.replay }), async (_req, res) => {
     const account = await getAccount(db, callerOf(res).accountId);
     if (!account) throw new AppError('UNAUTHENTICATED');
     res.json({ account });
@@ -97,11 +100,34 @@ export function authRoutes(db: Db): Router {
     res.json(await refreshSession(db, body?.refreshToken));
   });
 
-  router.post('/v1/auth/logout', authenticate(db, { required: true }), async (_req, res) => {
+  router.post('/v1/auth/logout', authenticate(verifier, { required: true, replay: infra.replay }), async (_req, res) => {
     const sessionId = context(res).sessionId;
     if (sessionId) await revokeSession(db, sessionId);
     res.status(204).end();
   });
 
+  return router;
+}
+
+/**
+ * The API gateway's share of /v1/auth when split into processes (plan 4.7).
+ * The gateway holds no database credentials, so the password endpoints are
+ * retired outright there, which is why profile M comes after the browser
+ * sign-in build has shipped. `me` answers from the verified caller.
+ */
+export function gatewayAuthRoutes(infra: Infrastructure, verifier: TokenVerifier): Router {
+  const router = Router();
+  for (const path of ['/v1/auth/signup', '/v1/auth/login', '/v1/auth/refresh', '/v1/auth/logout']) {
+    router.post(path, (_req, res, next) => {
+      res.set('Deprecation', DEPRECATED_SINCE);
+      res.set('Sunset', SUNSET);
+      next(new AppError('ENDPOINT_RETIRED'));
+    });
+  }
+  router.get('/v1/auth/me', authenticate(verifier, { required: true, replay: infra.replay }), async (_req, res) => {
+    const account = await verifier.account(callerOf(res).accountId);
+    if (!account) throw new AppError('UNAUTHENTICATED');
+    res.json({ account });
+  });
   return router;
 }

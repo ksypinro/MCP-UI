@@ -12,11 +12,12 @@
 import type { Request, Response } from 'express';
 import { credentialFrom } from '../security/credentials.ts';
 import { DpopError, currentDpopNonce, verifyDpopProof } from '../oauth/dpop.ts';
+import type { ReplayStore } from '../security/replay.ts';
+import { metrics } from '../observability/metrics.ts';
 import { MCP_PATH } from './config.ts';
-import type { Db } from '../db/index.ts';
+import type { TokenVerifier } from '../security/verifier.ts';
 import { MCP_BASE_URL } from '../config.ts';
 import { DPOP_ALGORITHMS, SCOPES_SUPPORTED, type Scope } from '../oauth/config.ts';
-import { verifyOAuthAccessToken } from '../oauth/verify.ts';
 import { policyFor } from './policy.ts';
 import type { Caller } from '../domain/types.ts';
 import { AppError } from '../errors.ts';
@@ -35,6 +36,7 @@ export function bearerFrom(req: Request): string | null {
  * client told to use one can retry at once.
  */
 function dpopChallenge(res: Response, error: DpopError): void {
+  metrics.inc('challenge_issued', { status: '401', scheme: 'dpop' });
   res
     .status(401)
     .set('WWW-Authenticate',
@@ -82,6 +84,7 @@ export function challengeValue(error: string, description: string, scopes: reado
 function challenge(
   res: Response, status: 401 | 403, error: string, description: string, scopes: readonly string[]
 ): void {
+  metrics.inc('challenge_issued', { status: String(status), scheme: 'bearer' });
   res
     .status(status)
     .set('WWW-Authenticate', challengeValue(error, description, scopes))
@@ -110,6 +113,8 @@ export interface GateLimits {
   perAddress: (key: string) => Promise<BucketResult>;
   /** Requests whose token verified, keyed by grant. */
   perGrant: (key: string) => Promise<BucketResult>;
+  /** Where DPoP proof ids are remembered. */
+  replay: ReplayStore;
 }
 
 export type GateOutcome =
@@ -131,12 +136,12 @@ export type GateOutcome =
  * fresh, empty bucket on every request.
  */
 export async function gate(
-  db: Db, req: Request, res: Response, requestId: string, limits: GateLimits
+  verifier: TokenVerifier, req: Request, res: Response, requestId: string, limits: GateLimits
 ): Promise<GateOutcome> {
   const credential = credentialFrom(req);
   const token = credential?.token ?? null;
   const wanted = protectedCallsIn(req.body);
-  const verified = token ? await verifyOAuthAccessToken(db, token, wanted.scopes) : null;
+  const verified = token ? await verifier.oauth(token, wanted.scopes) : null;
 
   const grantId = verified && (verified.ok || verified.reason === 'insufficient_scope')
     ? verified.grantId
@@ -154,9 +159,9 @@ export async function gate(
   // however valid it otherwise is.
   if (verified?.ok && verified.cnfJkt && token) {
     try {
-      if (credential?.scheme !== 'DPoP') throw new DpopError('invalid_dpop_proof', 'This token must be presented with the DPoP scheme.');
+      if (credential?.scheme !== 'DPoP') throw new DpopError('invalid_dpop_proof', 'This token must be presented with the DPoP scheme.', 'scheme');
       await verifyDpopProof(req.get('dpop'), {
-        htm: req.method, htu: `${MCP_BASE_URL}${MCP_PATH}`, accessToken: token, expectedJkt: verified.cnfJkt
+        htm: req.method, htu: `${MCP_BASE_URL}${MCP_PATH}`, accessToken: token, expectedJkt: verified.cnfJkt, replay: limits.replay
       });
     } catch (error) {
       if (!(error instanceof DpopError)) throw error;

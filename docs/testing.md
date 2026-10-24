@@ -1,6 +1,6 @@
 # Testing and verification
 
-298 automated tests, plus three harnesses for the things tests cannot reach.
+344 automated tests, plus four harnesses for the things tests cannot reach.
 This document explains what each layer proves — and, as importantly, what it
 does not.
 
@@ -10,12 +10,14 @@ does not.
 
 | | Count | Command | What it establishes |
 | --- | --- | --- | --- |
-| Server | 238 | `npm test` | Domain rules, HTTP contract, OAuth, DPoP and PAR, MCP protocol, views |
+| Server | 284 | `npm test` | Domain rules, HTTP contract, OAuth, DPoP and PAR, passkeys, account pages, stores, KMS, the split, MCP protocol, views |
+| Server on real backends | the same 284 | `npm run test:pg` | The same suite on PostgreSQL 17 and Redis 7: real row locks, shared stores, four processes |
 | iOS | 60 | `xcodebuild … test` | View-model state machines, browser sign-in, DPoP proofs, refresh, transport |
-| Acceptance | 42 criteria | `npm run acceptance` | Which of §12 (and fourteen redesign criteria) the suites actually establish |
+| Acceptance | 47 criteria | `npm run acceptance` | Which of §12 (and nineteen redesign criteria) the suites actually establish |
 | Client conformance | 18 checks | `npm run client-check` | That a compliant MCP client can find its way through |
 | Host readiness | 9 checks | `npm run host-check` | That everything failable without a host has already failed |
 | Views | manual | `node tools/mock-host/run.mjs` | What a view looks like and does |
+| Load | manual | `npm run load` | Throughput and latency of the tool-call and refresh paths, against a running server |
 
 ---
 
@@ -24,7 +26,8 @@ does not.
 ```bash
 cd server
 npm install
-npm test                                   # 238
+npm test                                   # 284
+npm run test:pg                            # the same on PostgreSQL and Redis
 npm run typecheck
 npm run acceptance                         # the criteria map
 
@@ -34,7 +37,12 @@ xcodebuild -project IoTSwitch.xcodeproj -scheme IoTSwitch \
 ```
 
 The server suite needs nothing installed — PGlite is real PostgreSQL compiled
-to WebAssembly, so there is no database to provision.
+to WebAssembly, so there is no database to provision. On PGlite the tests that
+need Redis or several processes are skipped, and the acceptance report says
+which criteria that leaves unproven. `npm run test:pg` needs a PostgreSQL 17
+and a Redis 7; it defaults to local containers on ports 55432 and 56379, or
+takes `TEST_DATABASE_URL` and `TEST_REDIS_URL`. CI runs both legs on every pull
+request.
 
 ---
 
@@ -66,6 +74,14 @@ to WebAssembly, so there is no database to provision.
 | `device-service.test.ts` | 4 | Internal token verification, `alg: none` and key confusion, no adapter bypass |
 | `dpop.test.ts` | 7 | DPoP proofs: every claim, the nonce, replay, key mismatch, private keys refused |
 | `first-party.test.ts` | 10 | The iOS app's PAR flow, bound tokens and refresh, code binding, `DPOP_REQUIRED_FOR_API`, legacy sunset, the app-site association, DPoP at `/mcp` |
+| `contention.test.ts` | 4 | Fifty concurrent refreshes, code redemptions, switches and creates |
+| `stores.test.ts` | 7 | One contract for memory and Redis stores; sharing and revocation across processes; failing closed (Redis tests need `TEST_REDIS_URL`) |
+| `kms.test.ts` | 6 | Envelope-encrypted keys, KMS-held signing, refusing to start on a bad key file, rotation |
+| `passkeys.test.ts` | 7 | Real WebAuthn ceremonies with a software authenticator: phishing RP IDs and origins, replayed challenges, cloned counters, recent sign-in, CSP |
+| `account.test.ts` | 5 | Connected apps, disconnecting, sign out everywhere, password change |
+| `observability.test.ts` | 5 | No token reaches a log line; refresh and DPoP counters; alerts; Prometheus format |
+| `split.test.ts` | 7 | Profile M over real mTLS: introspection, exchange, certificate-bound internal tokens, the allowlist, failing closed |
+| `split-processes.test.ts` | 1 | Profile M as four real processes on PostgreSQL and Redis |
 
 ---
 

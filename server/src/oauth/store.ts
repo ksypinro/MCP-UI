@@ -384,7 +384,7 @@ export async function rotateRefresh(
     clientId: string; resource: unknown; scope: unknown; graceSeconds: number;
     /** Thumbprint of the key that signed this request's DPoP proof, if one was sent and verified. */
     presentedJkt: string | null;
-    seal: (issued: IssuedTokens) => void;
+    seal: (issued: IssuedTokens) => Promise<void>;
   }
 ): Promise<RefreshOutcome> {
   if (!wellFormed('refresh', presented)) return { kind: 'invalid', reason: 'unknown' };
@@ -444,7 +444,10 @@ export async function rotateRefresh(
         WHERE token_hash = $2 AND replaced_by IS NULL`,
       [tokenDigest(issued.refreshToken!), row.token_hash]
     );
-    request.seal(issued);
+    // If the seal cannot be written (the shared store is down), this throws
+    // and the rotation rolls back: better a refused refresh than a rotation
+    // whose duplicate would then look like theft.
+    await request.seal(issued);
     return { kind: 'rotated', issued };
   });
 }
@@ -502,6 +505,7 @@ export async function pruneExpiredOAuth(db: Db): Promise<void> {
   await db.query('DELETE FROM oauth_authorization_codes WHERE expires_at <= now()');
   await db.query('DELETE FROM oauth_pending_authorizations WHERE expires_at <= now()');
   await db.query('DELETE FROM par_requests WHERE expires_at <= now()');
+  await db.query('DELETE FROM webauthn_challenges WHERE expires_at <= now()');
 }
 
 /* ------------------------------------------------- pushed authorization */

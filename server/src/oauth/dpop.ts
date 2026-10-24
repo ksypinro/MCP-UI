@@ -13,25 +13,35 @@
  * Nonces are stateless: an HMAC of the current five-minute window, so they
  * survive restarts and need no storage. The current and previous window are
  * accepted. Each proof's jti is remembered for two minutes so a captured
- * proof cannot be replayed within its own lifetime.
+ * proof cannot be replayed within its own lifetime, in a store every process
+ * shares when there is more than one (security/replay.ts).
  */
 
 import { createHash, createHmac } from 'node:crypto';
 import { EmbeddedJWK, calculateJwkThumbprint, decodeProtectedHeader, jwtVerify } from 'jose';
 import { keys } from '../security/keys.ts';
 import { DPOP_ALGORITHMS } from './config.ts';
+import type { ReplayStore } from '../security/replay.ts';
+import { metrics } from '../observability/metrics.ts';
 
 const NONCE_WINDOW_MS = 5 * 60_000;
-const JTI_TTL_MS = 2 * 60_000;
+const JTI_TTL_SECONDS = 120;
 
 export type DpopErrorCode = 'invalid_dpop_proof' | 'use_dpop_nonce';
 
+/** Why a proof was refused, for the dpop_rejected metric. Never shown to the client. */
+export type DpopReason =
+  | 'missing' | 'malformed' | 'private_key' | 'signature' | 'jti' | 'htm' | 'htu' | 'ath' | 'key_mismatch'
+  | 'nonce' | 'replay' | 'scheme';
+
 export class DpopError extends Error {
   readonly code: DpopErrorCode;
-  constructor(code: DpopErrorCode, message: string) {
+  readonly reason: DpopReason;
+  constructor(code: DpopErrorCode, message: string, reason: DpopReason = code === 'use_dpop_nonce' ? 'nonce' : 'malformed') {
     super(message);
     this.name = 'DpopError';
     this.code = code;
+    this.reason = reason;
   }
 }
 
@@ -48,18 +58,6 @@ function nonceValid(nonce: unknown): boolean {
   if (typeof nonce !== 'string') return false;
   const window = Math.floor(Date.now() / NONCE_WINDOW_MS);
   return nonce === nonceFor(window) || nonce === nonceFor(window - 1);
-}
-
-/** Proof ids seen recently. Per process, like the other in-memory stores. */
-const seen = new Map<string, number>();
-
-function claimJti(key: string): boolean {
-  const now = Date.now();
-  if (seen.size > 10_000) for (const [k, expiry] of seen) if (expiry <= now) seen.delete(k);
-  const expiry = seen.get(key);
-  if (expiry !== undefined && expiry > now) return false;
-  seen.set(key, now + JTI_TTL_MS);
-  return true;
 }
 
 /**
@@ -86,12 +84,23 @@ export interface ProofCheck {
   accessToken?: string;
   /** The thumbprint the proof's key must have, if the token is already bound. */
   expectedJkt?: string | null;
+  /** Where proof ids are remembered. Shared by every process serving traffic. */
+  replay: ReplayStore;
 }
 
-/** Verifies a DPoP proof and returns its key's thumbprint. Throws DpopError. */
+/** Verifies a DPoP proof and returns its key's thumbprint. Throws DpopError, and counts it. */
 export async function verifyDpopProof(proof: unknown, check: ProofCheck): Promise<{ jkt: string }> {
+  try {
+    return await verifyProof(proof, check);
+  } catch (error) {
+    if (error instanceof DpopError) metrics.inc('dpop_rejected', { reason: error.reason });
+    throw error;
+  }
+}
+
+async function verifyProof(proof: unknown, check: ProofCheck): Promise<{ jkt: string }> {
   if (typeof proof !== 'string' || proof.length === 0 || proof.length > 4096) {
-    throw new DpopError('invalid_dpop_proof', 'A DPoP proof is required.');
+    throw new DpopError('invalid_dpop_proof', 'A DPoP proof is required.', 'missing');
   }
 
   let header: ReturnType<typeof decodeProtectedHeader>;
@@ -101,7 +110,7 @@ export async function verifyDpopProof(proof: unknown, check: ProofCheck): Promis
     throw new DpopError('invalid_dpop_proof', 'The DPoP proof is malformed.');
   }
   // A proof carrying a private key is a client bug that leaks the key; refuse it.
-  if (!header.jwk || 'd' in header.jwk) throw new DpopError('invalid_dpop_proof', 'The proof must carry a public key.');
+  if (!header.jwk || 'd' in header.jwk) throw new DpopError('invalid_dpop_proof', 'The proof must carry a public key.', 'private_key');
 
   let payload: Record<string, unknown>;
   try {
@@ -112,32 +121,32 @@ export async function verifyDpopProof(proof: unknown, check: ProofCheck): Promis
       clockTolerance: 5
     }));
   } catch (error) {
-    throw new DpopError('invalid_dpop_proof', `The DPoP proof did not verify: ${(error as Error).message}`);
+    throw new DpopError('invalid_dpop_proof', `The DPoP proof did not verify: ${(error as Error).message}`, 'signature');
   }
 
   if (typeof payload.jti !== 'string' || payload.jti.length < 8 || payload.jti.length > 256) {
-    throw new DpopError('invalid_dpop_proof', 'The proof needs a unique jti.');
+    throw new DpopError('invalid_dpop_proof', 'The proof needs a unique jti.', 'jti');
   }
-  if (payload.htm !== check.htm.toUpperCase()) throw new DpopError('invalid_dpop_proof', 'htm does not match this request.');
+  if (payload.htm !== check.htm.toUpperCase()) throw new DpopError('invalid_dpop_proof', 'htm does not match this request.', 'htm');
   const presentedHtu = typeof payload.htu === 'string' ? normalizeHtu(payload.htu) : null;
   if (!presentedHtu || presentedHtu !== normalizeHtu(check.htu)) {
-    throw new DpopError('invalid_dpop_proof', 'htu does not match this request.');
+    throw new DpopError('invalid_dpop_proof', 'htu does not match this request.', 'htu');
   }
   if (check.accessToken !== undefined) {
     const ath = createHash('sha256').update(check.accessToken).digest('base64url');
-    if (payload.ath !== ath) throw new DpopError('invalid_dpop_proof', 'ath does not match the access token.');
+    if (payload.ath !== ath) throw new DpopError('invalid_dpop_proof', 'ath does not match the access token.', 'ath');
   }
 
   const jkt = await calculateJwkThumbprint(header.jwk, 'sha256');
   if (check.expectedJkt && jkt !== check.expectedJkt) {
-    throw new DpopError('invalid_dpop_proof', 'The proof was not signed by the key this token is bound to.');
+    throw new DpopError('invalid_dpop_proof', 'The proof was not signed by the key this token is bound to.', 'key_mismatch');
   }
 
   // Checked after the signature, so an unauthenticated request cannot learn
   // or burn nonces, and before the jti is claimed, so a client that only
   // needed a fresh nonce can resend the same proof contents with it.
   if (!nonceValid(payload.nonce)) throw new DpopError('use_dpop_nonce', 'Use the nonce in the DPoP-Nonce header.');
-  if (!claimJti(`${jkt}:${payload.jti}`)) throw new DpopError('invalid_dpop_proof', 'This proof was already used.');
+  if (!(await check.replay.claim(`dpop-jti:${jkt}:${payload.jti}`, JTI_TTL_SECONDS))) throw new DpopError('invalid_dpop_proof', 'This proof was already used.', 'replay');
 
   return { jkt };
 }

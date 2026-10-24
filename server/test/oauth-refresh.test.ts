@@ -4,8 +4,8 @@
  * public clients; hosts refresh from several workers at once, so the same
  * token legitimately arrives twice.
  *
- * Run on PGlite these prove the logic, not row-lock behaviour under real
- * contention; that needs a Postgres server.
+ * Run on PGlite these prove the logic; run with `npm run test:pg` they prove
+ * row-lock behaviour under real contention too.
  */
 
 import test, { after, before } from 'node:test';

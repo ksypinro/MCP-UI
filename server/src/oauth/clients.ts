@@ -17,7 +17,9 @@ import type { Db, Queryable } from '../db/index.ts';
 import {
   FIRST_PARTY_CLIENT_ID, MAX_REGISTERED_CLIENTS, UNUSED_CLIENT_TTL_SECONDS, firstPartyRedirectUris
 } from './config.ts';
-import { MemoryBucketStore, bucket } from '../security/rate-limit.ts';
+import { MemoryBucketStore, bucket, type BucketStore } from '../security/rate-limit.ts';
+import { metrics } from '../observability/metrics.ts';
+import { log } from '../observability/log.ts';
 
 export interface ResolvedClient {
   clientId: string;
@@ -57,7 +59,7 @@ const CIMD_MAX_BYTES = 5 * 1024;
  * screen. Comma-separated KNOWN_CLIENTS overrides the default. Claude's CIMD
  * URL is added once host-check has confirmed it.
  */
-function knownClients(): Set<string> {
+export function knownClients(): Set<string> {
   const configured = process.env.KNOWN_CLIENTS ?? 'https://chatgpt.com/oauth/client.json';
   return new Set(configured.split(',').map((entry) => entry.trim()).filter(Boolean));
 }
@@ -96,20 +98,28 @@ export function isForbiddenAddress(address: string): boolean {
  * answers the check with a public address and the connection with an internal
  * one.
  */
+function deniedRange(host: string): void {
+  metrics.inc('cimd_fetch', { result: 'denied_range' });
+  log('warn', 'cimd_fetch_denied_range', { host });
+}
+
 async function resolvePinnedAddress(
   hostname: string
 ): Promise<{ address: string; family: number } | null> {
   if (isIP(hostname)) {
-    return isForbiddenAddress(hostname)
-      ? null
-      : { address: hostname, family: isIP(hostname) };
+    if (!isForbiddenAddress(hostname)) return { address: hostname, family: isIP(hostname) };
+    deniedRange(hostname);
+    return null;
   }
   try {
     const addresses = await lookup(hostname, { all: true });
     if (addresses.length === 0) return null;
     // Every address must be public: a name resolving to both is still a way
     // to reach the private one.
-    if (addresses.some((entry) => isForbiddenAddress(entry.address))) return null;
+    if (addresses.some((entry) => isForbiddenAddress(entry.address))) {
+      deniedRange(hostname);
+      return null;
+    }
     const chosen = addresses[0];
     return chosen ? { address: chosen.address, family: chosen.family } : null;
   } catch {
@@ -195,7 +205,12 @@ function fetchPinned(
  * legitimate clients fetch once per cache period, not once per sign-in.
  */
 const CIMD_FETCHES_PER_HOST_PER_MINUTE = 20;
-const takeCimdFetch = bucket(new MemoryBucketStore(), CIMD_FETCHES_PER_HOST_PER_MINUTE, 60_000);
+let takeCimdFetch = bucket(new MemoryBucketStore(), CIMD_FETCHES_PER_HOST_PER_MINUTE, 60_000);
+
+/** Counts metadata fetches in a store every process shares. Called once at start-up. */
+export function useCimdFetchStore(store: BucketStore): void {
+  takeCimdFetch = bucket(store, CIMD_FETCHES_PER_HOST_PER_MINUTE, 60_000);
+}
 
 export async function cimdFetchAllowed(host: string): Promise<boolean> {
   return (await takeCimdFetch(`cimd-host:${host.toLowerCase()}`)).ok;
@@ -268,23 +283,28 @@ async function resolveMetadataDocument(
   // per-host budget below never bites a popular host's legitimate users.
   const cached = await cachedDocument(db, clientId);
   if (cached) return cached;
-  if (!(await cimdFetchAllowed(url.host))) return null;
+  if (!(await cimdFetchAllowed(url.host))) {
+    metrics.inc('cimd_fetch', { result: 'budget' });
+    return null;
+  }
 
   try {
     const response = await fetcher(url);
-    if (!response || response.status < 200 || response.status >= 300) return null;
-    if (Buffer.byteLength(response.body, 'utf8') > CIMD_MAX_BYTES) return null;
+    const invalid = () => { metrics.inc('cimd_fetch', { result: 'invalid' }); return null; };
+    if (!response) return null; // refused before any connection: counted where it was refused
+    if (response.status < 200 || response.status >= 300) return invalid();
+    if (Buffer.byteLength(response.body, 'utf8') > CIMD_MAX_BYTES) return invalid();
 
     const document = JSON.parse(response.body) as ClientIdMetadataDocument;
 
     // The document must be self-referential, or anyone could host a document
     // claiming to be someone else's client_id.
-    if (document.client_id !== clientId) return null;
+    if (document.client_id !== clientId) return invalid();
 
     const redirectUris = Array.isArray(document.redirect_uris)
       ? document.redirect_uris.filter((entry): entry is string => typeof entry === 'string')
       : [];
-    if (redirectUris.length === 0) return null;
+    if (redirectUris.length === 0) return invalid();
 
     const digest = createHash('sha256').update(response.body).digest('hex');
     const ttl = cimdCacheSeconds(response.cacheControl);
@@ -299,6 +319,7 @@ async function resolveMetadataDocument(
       );
     }
 
+    metrics.inc('cimd_fetch', { result: 'ok' });
     return {
       clientId,
       redirectUris,
@@ -309,6 +330,7 @@ async function resolveMetadataDocument(
       firstParty: false
     };
   } catch {
+    metrics.inc('cimd_fetch', { result: 'error' });
     return null;
   }
 }

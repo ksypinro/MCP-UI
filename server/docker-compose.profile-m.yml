@@ -1,0 +1,97 @@
+# Profile M for local testing: one process per component, mutual TLS between
+# them, a local CA, PostgreSQL and Redis. Plan 4.7. Not a deployment: real
+# certificates come from a service mesh, real keys from a KMS (gate G4).
+#
+#   npm install
+#   docker compose -f docker-compose.profile-m.yml up
+#
+# Public:   authorization server  http://localhost:4000
+#           MCP endpoint          http://localhost:4001/mcp
+#           REST API              http://localhost:4002
+# Internal: :9443 (introspection, token exchange) and :9444 (Device Service),
+#           mTLS only, never published.
+
+x-node: &node
+  image: node:25-bookworm-slim
+  working_dir: /app
+  volumes:
+    - .:/app:ro
+    - certs:/certs:ro
+  environment: &env
+    AUTH_BASE_URL: http://localhost:4000
+    MCP_BASE_URL: http://localhost:4001
+    API_BASE_URL: http://localhost:4002
+    DATABASE_URL: postgres://iotsw:iotsw@postgres:5432/iotsw
+    REDIS_URL: redis://redis:6379
+    TLS_CA: /certs/ca.crt
+    # Every process must hold the same key material (token hashes, DPoP
+    # nonces). Development values; a KMS supplies them in production.
+    TOKEN_PEPPERS: "1:ZGV2ZWxvcG1lbnQtb25seS10b2tlbi1wZXBwZXItMzJieXRlcw=="
+    PASSWORD_PEPPER: "1:ZGV2ZWxvcG1lbnQtb25seS1wYXNzd29yZC1wZXBwZXItMzI="
+    INTERNAL_MAC_KEY: "ZGV2ZWxvcG1lbnQtb25seS1pbnRlcm5hbC1tYWMta2V5LTMy"
+  depends_on:
+    certs: { condition: service_completed_successfully }
+    postgres: { condition: service_healthy }
+    redis: { condition: service_healthy }
+
+services:
+  postgres:
+    image: postgres:17
+    environment: { POSTGRES_USER: iotsw, POSTGRES_PASSWORD: iotsw, POSTGRES_DB: iotsw }
+    healthcheck: { test: ["CMD", "pg_isready", "-U", "iotsw"], interval: 2s, retries: 30 }
+
+  redis:
+    image: redis:7
+    healthcheck: { test: ["CMD", "redis-cli", "ping"], interval: 2s, retries: 30 }
+
+  certs:
+    image: node:25-bookworm-slim
+    working_dir: /app
+    volumes: [".:/app:ro", "certs:/certs"]
+    command: sh -c "apt-get update -qq && apt-get install -yqq openssl >/dev/null && test -f /certs/ca.crt || node tools/split/certs.ts /certs"
+
+  as:
+    <<: *node
+    command: node src/entry/as.ts
+    environment: { <<: *env, PORT: "4000", INTERNAL_PORT: "9443", TLS_CERT: /certs/auth.crt, TLS_KEY: /certs/auth.key }
+    ports: ["4000:4000"]
+
+  ds:
+    <<: *node
+    command: node src/entry/ds.ts
+    environment:
+      <<: *env
+      PORT: "9444"
+      TLS_CERT: /certs/device-service.crt
+      TLS_KEY: /certs/device-service.key
+      JWKS_URL: http://as:4000/.well-known/jwks.json
+    depends_on: [as]
+
+  rs:
+    <<: *node
+    command: node src/entry/rs.ts
+    environment:
+      <<: *env
+      PORT: "4001"
+      AUTH_INTERNAL_URL: https://as:9443
+      DEVICE_SERVICE_URL: https://ds:9444
+      TLS_CERT: /certs/mcp-rs.crt
+      TLS_KEY: /certs/mcp-rs.key
+    ports: ["4001:4001"]
+    depends_on: [as, ds]
+
+  gw:
+    <<: *node
+    command: node src/entry/gw.ts
+    environment:
+      <<: *env
+      PORT: "4002"
+      AUTH_INTERNAL_URL: https://as:9443
+      DEVICE_SERVICE_URL: https://ds:9444
+      TLS_CERT: /certs/api-gw.crt
+      TLS_KEY: /certs/api-gw.key
+    ports: ["4002:4002"]
+    depends_on: [as, ds]
+
+volumes:
+  certs:

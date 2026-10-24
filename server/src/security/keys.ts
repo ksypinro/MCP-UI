@@ -13,6 +13,10 @@
  * 3. Otherwise, fresh random keys for this process only. That is what tests
  *    get, and it is refused when NODE_ENV is production.
  *
+ * 0. A KMS (security/kms.ts, KMS_PROVIDER): the entry point decrypts an
+ *    envelope file at start-up and installs the result with useKeyMaterial.
+ *    Signing keys then stay inside the KMS.
+ *
  * Signing keys for internal tokens (ES256) follow the same order, with
  * SIGNING_KEYS as a JSON array of private JWKs, current first. Unlike the
  * peppers they may be per-process even in production: an internal token
@@ -20,7 +24,7 @@
  * ever verified by the process that signed it.
  */
 
-import { createHash, generateKeyPairSync, randomBytes, type JsonWebKey } from 'node:crypto';
+import { createHash, createPrivateKey, generateKeyPairSync, randomBytes, sign as cryptoSign, type JsonWebKey } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 
@@ -29,11 +33,16 @@ export interface VersionedKey {
   key: Buffer;
 }
 
-/** A private ES256 key as a JWK, with its RFC 7638 thumbprint as `kid`. */
+/**
+ * An ES256 signing key, identified by its RFC 7638 thumbprint. `sign` returns
+ * a raw r‖s signature. The private key is present only when it lives in this
+ * process (environment or key file); a KMS-held key has none here.
+ */
 export interface SigningKey {
   kid: string;
-  privateJwk: JsonWebKey;
   publicJwk: JsonWebKey;
+  sign(data: Buffer): Promise<Buffer>;
+  privateJwk?: JsonWebKey;
 }
 
 export interface KeyMaterial {
@@ -46,7 +55,7 @@ export interface KeyMaterial {
 }
 
 /** RFC 7638 thumbprint of an EC public key. */
-function thumbprint(jwk: JsonWebKey): string {
+export function thumbprint(jwk: JsonWebKey): string {
   const canonical = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y });
   return createHash('sha256').update(canonical).digest('base64url');
 }
@@ -56,7 +65,11 @@ function toSigningKey(privateJwk: JsonWebKey): SigningKey {
     throw new Error('Signing keys must be private P-256 JWKs');
   }
   const publicJwk: JsonWebKey = { kty: 'EC', crv: 'P-256', x: privateJwk.x, y: privateJwk.y };
-  return { kid: thumbprint(publicJwk), privateJwk, publicJwk };
+  const key = createPrivateKey({ key: privateJwk, format: 'jwk' });
+  return {
+    kid: thumbprint(publicJwk), privateJwk, publicJwk,
+    sign: async (data) => cryptoSign('sha256', data, { key, dsaEncoding: 'ieee-p1363' })
+  };
 }
 
 export function newSigningKey(): SigningKey {
@@ -74,6 +87,11 @@ function signingKeysFromEnvironment(): SigningKey[] | null {
 let keyFile: string | null = null;
 let material: KeyMaterial | null = null;
 
+/** Installs material decrypted from a KMS. Called once, at start-up. */
+export function useKeyMaterial(loaded: KeyMaterial): void {
+  material = loaded;
+}
+
 /** Called once by the server entry point. Tests never call it. */
 export function useKeyFile(path: string): void {
   keyFile = path;
@@ -87,6 +105,11 @@ export function useKeyFile(path: string): void {
  */
 export function reloadKeysForRotation(): void {
   material = null;
+}
+
+/** Whether key material has been loaded or installed yet. */
+export function keysLoaded(): boolean {
+  return material !== null;
 }
 
 export function keys(): KeyMaterial {
@@ -135,7 +158,7 @@ function writeKeyFile(path: string, material: KeyMaterial, flag: 'wx' | 'w'): vo
     tokenPeppers: material.tokenPeppers.map(({ version, key }) => ({ version, key: key.toString('base64') })),
     passwordPepper: { version: material.passwordPepper.version, key: material.passwordPepper.key.toString('base64') },
     internalMacKey: material.internalMacKey.toString('base64'),
-    signingKeys: material.signingKeys.map((key) => key.privateJwk)
+    signingKeys: material.signingKeys.flatMap((key) => (key.privateJwk ? [key.privateJwk] : []))
   };
   writeFileSync(path, JSON.stringify(shape, null, 2), { mode: 0o600, flag });
 }

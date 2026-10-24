@@ -72,7 +72,7 @@ This plan turns the architecture into **46 pull requests across six phases** (si
 | G1 | PR 0.6 flag goes on | Results of `host-check` on ChatGPT: does a plain 401 start linking, and is `_meta.securitySchemes` read? |
 | G2 | Phase 3 starts | **Decided 18 Oct 2026:** the native form is replaced by the system browser sheet, and the minimum is **iOS 18** (above the 17.4 the `.https` callback needs) |
 | G3 | Phase 3.5 | Apple Developer team and the `app.iot.example` domain for universal links |
-| G4 | Phase 4 starts | Cloud provider for KMS, Redis and Postgres |
+| G4 | Phase 4 starts | Cloud provider for KMS, Redis and Postgres. **Deferred 19 Oct 2026:** phase 4 built the KMS layer provider-neutral; only the adapter waits |
 | G5 | Phase 5 | Whether any enterprise tenant needs ID-JAG |
 
 ---
@@ -783,6 +783,20 @@ export async function verifyProof(proof: string, opts: {
 
 **Phase 4 exit review:** a load test of refresh and tool-call paths on Postgres + Redis. A failover drill (Redis down → refuse protected calls with 503, not fail open). AC-43 to AC-47.
 
+### Phase 4 as built
+
+- **One branch, eight PRs' worth.** As in phases 2 and 3, the phase shipped as one change.
+- **4.1 Postgres.** `db/pg.ts` behind the same `Db` interface. `DATABASE_URL` selects it. `int8` is parsed as a number and `date` as UTC per pool, so nothing above `src/db` changed. Migrations moved from `BEGIN`/`COMMIT` over `exec` (which a pool can split across connections) into `transaction()` under a per-schema advisory lock, so several processes starting together migrate once. `REAL_CONTENTION` is not a separate mode: `npm run test:pg` runs the whole suite on Postgres 17 with a schema per test database (`DATABASE_ISOLATION=schema`), so every concurrency test contends through a real pool. The whole suite passed on Postgres 17 first time; the fifty-way tests are `test/contention.test.ts`. CI (`.github/workflows/server.yml`, the repository's first) runs PGlite and Postgres 17 + Redis 7 legs.
+- **4.2 Redis.** `stores/redis.ts`: buckets (one Lua script for `INCR` and expiry), DPoP `jti` replay (`SET NX EX`), and sealed refresh responses. The sealing key is HKDF-derived from the internal MAC key, so every process can open what another sealed and Redis sees only ciphertext. One `Infrastructure` object, from `REDIS_URL` or memory, is threaded through `createApp`. Sealing became async and is awaited inside the rotation transaction. **Fail closed:** no offline queue, a 500 ms command timeout, and any Redis error is a 503. With `TEST_REDIS_URL` the whole HTTP suite runs on the Redis stores. The plan's "introspection cache in Redis" is in memory per edge instead, emptied by the revocation bus (4.4), which bounds staleness the same way without a second shared cache.
+- **4.3 KMS, provider-neutral (G4 deferred).** `security/kms.ts` defines the five-call `Kms` interface. Peppers and the MAC key are envelope-encrypted data keys in `keys.kms.json`, decrypted once at start-up with the key name as associated data. Signing keys never leave the KMS: token B is now assembled by hand and signed through `SigningKey.sign`. `LocalKms` is a software implementation standing in for the emulator. `KMS_PROVIDER=aws|gcp|azure` refuses to start, naming G4. Rotation is `npm run keys -- rotate-pepper` (keep current and previous) and `rotate-signing` (previous stays in the JWKS). Rotation is a command to schedule, not an in-process timer.
+- **4.4 Revocation bus.** `revocation.ts` is a hub per process with three events: `grant.revoked`, `account.revoked`, `client.blocked`. `bridgeRevocations` joins hubs over a Redis channel, with an origin id so a process never re-delivers its own events. The exchange cache and the edge introspection cache subscribe. The budget store does not: a revoked grant's counters simply expire. Nothing emits `client.blocked` yet; there is no block action until an admin surface exists.
+- **4.5 Passkeys.** `@simplewebauthn/server` 14. Migration **011**, not 012: the iOS client needed no migration in phase 3. User verification is required, the RP ID is the authorization server's host, and challenges are single-use (`DELETE … RETURNING`). Sign-in challenges are bound to the browser-binding cookie, registration challenges to the account. Counter regression is refused, except 0→0 for synced passkeys. Registration lives on a new account area (`/account`) and needs a sign-in in the last 15 minutes. "Sign in with a passkey" appears on the authorization login page and the account sign-in page. Those pages, and only those, carry one nonce'd script and `connect-src 'self'`. Tests drive real ceremonies with a software authenticator (`test/webauthn-helpers.ts`). **TOTP was not built**: it is marked optional, and passkeys cover the phishing-resistant factor.
+- **4.6 Connected apps.** `/account/apps` lists each live grant with an honest name (host for CIMD, "unverified" plus destination for DCR, "IoT Switch for iPhone" for the app), scopes, created and last-used times. Disconnect, sign out everywhere, and password change (which signs out everywhere, then starts a fresh session here) are CSRF-protected. `last_used_at` is written at most once a minute per grant per process.
+- **4.7 Profile M.** Entry points `src/entry/{as,rs,gw,ds}.ts`. Adapters now take a `TokenVerifier` (local, or introspection over mTLS), an `Exchanger` and a `DeviceService` (local or remote), so profile S is the same code composed in one process. Internal listeners: the AS's `/introspect`, `/account` and `/token-exchange`, and the Device Service's four operations. Both require TLS 1.3 client certificates from the private CA with exactly one SPIFFE URI on the allowlist. Each edge may introspect only tokens for its own resource. Token B's `cnf` is `x5t#S256` of the certificate the edge presented to the AS, and the Device Service checks it against the certificate on its own connection. The Device Service verifies with the published JWKS (`JWKS_URL`). The gateway has no database, so in profile M the legacy password endpoints answer 410 and `/v1/auth/me` answers from introspection. `docker-compose.profile-m.yml` and `npm run certs` provide the local CA. `test/split.test.ts` runs the components over real mTLS in one process; `test/split-processes.test.ts` runs four real processes and needs Postgres and Redis.
+- **4.8 Observability.** `observability/log.ts` is the only logger. It allowlists fields, writes no object other than an `Error`, and scrubs `iotsw_xx_…`, JWTs and Authorization values, counting each redaction. `observability/metrics.ts` exposes the plan's counters (`exchange_cache_hit_ratio` is derived), plus `log_secrets_redacted`, `introspection_cache` and `alerts_raised`, on `METRICS_PORT` (loopback). Alerts go out as `level: alert` log lines in-process; the same rules are in `ops/alerts.yml` for Prometheus.
+- **Acceptance report.** It now treats a skipped test as unproven, not passing, and a criterion can require Postgres or Redis, so a PGlite-only run reports AC-30, AC-43, AC-44 and AC-47 as partial rather than proven.
+- **Exit review, still to do.** Run `npm run test:pg` locally (CI runs it on every PR), then the load test (`npm run load`) and the failover drill on Postgres + Redis. Docker was unavailable on the development machine for the last part of the phase.
+
 ---
 
 ## 9. Testing strategy
@@ -867,7 +881,7 @@ Extended in phase 1 and rerun at every phase exit, with results recorded in `spi
 | `WRITE_BUDGETS` | `report` | 2.6 | `enforce` after 1 week | Phase 4 |
 | `DPOP_REQUIRED_FOR_API` | `off` | 3.3 | `on` when the iOS 3.6 build is the minimum supported | Phase 4 |
 | `LEGACY_FIRST_PARTY_AUTH` | `deprecated` (as built) | 3.7 | `off` | After one iOS release |
-| `PASSKEYS` | `off` | 4.5 | `on` | Phase 5 |
+| `PASSKEYS` | not built | 4.5 | n/a | n/a: always offered; an account without a passkey sees only the extra button |
 | `HOST_EGRESS_PINNING` | `alert` | 5.3 | `enforce` per verified host, optional | n/a |
 | `ENTERPRISE_MANAGED_AUTH` | `off` | 5.1 | Per tenant | n/a |
 
@@ -942,14 +956,15 @@ Extended in phase 1 and rerun at every phase exit, with results recorded in `spi
 - [x] 3.7 Legacy sunset and requirement updates
 
 ### Phase 4
-- [ ] 4.1 Postgres driver and dual CI
-- [ ] 4.2 Redis stores
-- [ ] 4.3 KMS key provider
-- [ ] 4.4 Revocation bus
-- [ ] 4.5 Passkeys
-- [ ] 4.6 Connected apps page
-- [ ] 4.7 Profile M split
-- [ ] 4.8 Observability
+- [x] 4.1 Postgres driver and dual CI
+- [x] 4.2 Redis stores
+- [x] 4.3 KMS key provider (provider-neutral; the cloud adapter waits on G4)
+- [x] 4.4 Revocation bus
+- [x] 4.5 Passkeys (TOTP, optional, not built)
+- [x] 4.6 Connected apps page
+- [x] 4.7 Profile M split
+- [x] 4.8 Observability
+- [ ] Exit review: load test and failover drill on Postgres + Redis
 
 ### Phase 5 (optional)
 - [ ] 5.1 Enterprise-Managed Authorization (ID-JAG grant, tenant issuer allowlist, subject links), 6 d

@@ -15,6 +15,8 @@
  */
 
 import { MemoryBucketStore, bucket, type BucketResult, type BucketStore } from './security/rate-limit.ts';
+import { metrics } from './observability/metrics.ts';
+import { log } from './observability/log.ts';
 
 export type WriteKind = 'control' | 'create';
 
@@ -46,8 +48,11 @@ export class WriteBudgets {
 
     const refused = results.find((result) => !result.ok);
     if (!refused) return { ok: true };
-    if (process.env.WRITE_BUDGETS !== 'enforce') {
-      process.stderr.write(`[budget] report-only: ${kind} over budget for grant ${grantId}\n`);
+    const tool = kind === 'control' ? 'control_device' : 'add_device';
+    const enforcing = process.env.WRITE_BUDGETS === 'enforce';
+    metrics.inc('budget_exhausted', { tool, mode: enforcing ? 'enforce' : 'report' });
+    if (!enforcing) {
+      log('warn', 'write_budget_exceeded', { tool, grantId, reason: 'report-only: allowed' });
       return { ok: true };
     }
     return refused;

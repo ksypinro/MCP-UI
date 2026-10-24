@@ -10,6 +10,7 @@ import type { Queryable } from '../db/index.ts';
 import { wellFormed } from '../tokens/format.ts';
 import { tokenDigestCandidates } from '../tokens/hash.ts';
 import { RESOURCE_URI, type Scope } from './config.ts';
+import { touchGrant } from './grant-usage.ts';
 
 export type VerifiedToken =
   | {
@@ -57,6 +58,9 @@ export async function verifyOAuthAccessToken(
   if (missing.length > 0) {
     return { ok: false, reason: 'insufficient_scope', grantId: row.grant_id, granted, required: requiredScopes };
   }
+
+  // Best effort: a failure to record use must not fail the request.
+  await touchGrant(db, row.grant_id).catch(() => {});
 
   return {
     ok: true,

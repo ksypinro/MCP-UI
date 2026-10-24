@@ -1,4 +1,4 @@
-# IoT Switch — backend (phase 1)
+# IoT Switch — backend
 
 Persistent accounts, sessions, and the four device operations from
 `../requirement.md` sections 4, 6, 7.1 and 11.
@@ -11,7 +11,8 @@ adapter will call the same device service directly rather than over HTTP.
 ```bash
 npm install
 npm start          # http://localhost:4000
-npm test           # 238 tests
+npm test           # 284 tests on PGlite and in-memory stores
+npm run test:pg    # the same on PostgreSQL 17 and Redis 7 (local containers, or CI)
 npm run typecheck
 ```
 
@@ -285,10 +286,12 @@ unit test passed straight over.
 npm run acceptance
 ```
 
-Runs the suite and reports which of the 42 criteria — the 28 in section 12 of
-`../requirement.md`, plus fourteen added by the authentication redesign — it
+Runs the suite and reports which of the 47 criteria — the 28 in section 12 of
+`../requirement.md`, plus nineteen added by the authentication redesign — it
 establishes, which are only partly established, and which cannot be
-established from here at all.
+established from here at all. A skipped test proves nothing, and criteria that
+need PostgreSQL or Redis are only reported proven by a run that had them
+(`DATABASE_URL=… TEST_REDIS_URL=… npm run acceptance`).
 
 It fails if a criterion's evidence goes missing, becomes ambiguous, or starts
 failing, so renaming a test drops its criterion loudly rather than quietly.
@@ -324,32 +327,73 @@ discovery and the `401` challenge over real HTTPS, and prints the connector URL
 with the checklist. The point is that everything that can fail without a host
 has already failed by the time you paste that URL anywhere.
 
-## On PGlite
+## Databases and shared state
 
-The store is [PGlite](https://pglite.dev): real PostgreSQL compiled to
-WebAssembly. Same SQL, same constraint enforcement, same SQLSTATEs — the schema
-and every query here run unmodified on a PostgreSQL server.
+Without configuration the store is [PGlite](https://pglite.dev): real
+PostgreSQL compiled to WebAssembly, so there is nothing to install. It runs
+in-process and serialises queries, so on PGlite the concurrency tests prove the
+logic, not row locks.
 
-What it is not is a server. It runs in-process and serialises queries, so no
-two statements are ever truly concurrent. **The tests in
-`test/concurrency.test.ts` therefore prove the logic is correct when two
-callers start from the same observed state — one wins, one is refused — but
-not yet its behaviour under genuine row-level contention.** That gap closes by
-adding a `pg`-backed implementation of the `Db` interface in `src/db/index.ts`
-and pointing the same tests, unmodified, at a real server.
+`DATABASE_URL` switches to a PostgreSQL server (`src/db/pg.ts`), and nothing
+above `src/db` knows the difference. `npm run test:pg` runs the whole suite
+there, one schema per test database, so `test/concurrency.test.ts`,
+`test/oauth-refresh.test.ts` and the fifty-way `test/contention.test.ts`
+contend through a real connection pool. CI runs both.
 
-Everything above `src/db` is written against `Queryable` and plain Postgres
-SQL specifically to keep that a one-file change.
+`REDIS_URL` moves what used to be per-process into Redis: rate-limit and
+write-budget counters, used DPoP proof ids, sealed refresh responses, and
+revocation events. With it, several processes can serve traffic without each
+allowing the full rate limit or keeping internal tokens for a grant another
+revoked. It fails closed: if Redis is unreachable, requests get 503, never a
+free pass.
+
+## Keys
+
+The peppers, the MAC key and the signing keys come from the environment, from
+`keys.json` beside the database, or, with `KMS_PROVIDER`, from an envelope file
+whose secrets are encrypted under a KMS key and decrypted once at start-up.
+With a KMS, the signing keys never leave it. Only `KMS_PROVIDER=local`, a
+software stand-in, exists until a cloud is chosen. Rotate with
+`npm run keys -- rotate-pepper` (every 90 days) or `rotate-signing` (every 30).
+
+## The account pages
+
+`/account` on the authorization server: passkeys, password, and the apps that
+can reach your devices. Passkeys are WebAuthn credentials bound to this host,
+so a phishing page elsewhere cannot use them; they also appear as "Sign in
+with a passkey" on the authorization login page. `/account/apps` lists every
+grant, and lets you disconnect one, sign out everywhere, or change the
+password, which also signs out everywhere. Adding a passkey or a password needs
+a sign-in in the last fifteen minutes.
+
+## One process, or four
+
+`npm start` runs everything in one process (profile S). `src/entry/` holds
+profile M: the authorization server, the MCP resource server, the API gateway
+and the Device Service as separate processes. The edges hold no database
+credentials. They verify callers by introspection and get internal tokens by
+exchange, both over mutual TLS, and those tokens are bound to the edge's client
+certificate. `docker-compose.profile-m.yml` runs it with a local CA
+(`npm run certs`).
+
+## Logs and metrics
+
+Every log line goes through `src/observability/log.ts`: JSON, allowlisted
+fields only, and anything token-shaped replaced and counted. Security counters
+(refresh rotation and theft, DPoP refusals by reason, challenges, CIMD fetches,
+write budgets, cache hit ratios) are served in Prometheus format on
+`METRICS_PORT`, loopback only. Alerts are raised in-process as `level: alert`
+lines; `../ops/alerts.yml` has the same rules for Prometheus. `npm run load`
+drives the tool-call and refresh paths against a running server.
 
 ## Known gaps for later phases
 
-- No `pg` driver yet (above).
-- The rate limiter is per-process and in-memory; several instances behind a
-  load balancer would each allow the full quota. `TRUST_PROXY` is off unless
+- Rate limits are shared only with `REDIS_URL`. `TRUST_PROXY` is off unless
   set, because trusting `X-Forwarded-For` unconditionally lets a client forge
   `req.ip` and walk around the limit. Sign-up and log-in are bucketed by
   address; refresh is bucketed by the token presented, so an office NAT cannot
   log its eleventh user out.
+- No cloud KMS adapter: the provider is gate G4.
 - Device names fold with NFKC plus lowercase, which is not full Unicode case
   folding — "Straße" and "STRASSE" remain distinct devices. Usernames are
   unaffected because validation restricts them to ASCII first.

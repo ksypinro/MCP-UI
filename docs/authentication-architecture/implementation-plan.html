@@ -72,11 +72,11 @@ footer{border-top:1px solid var(--line);padding:32px;text-align:center;font-size
   article h2{font-size:24px;margin-top:64px}figure a{padding:14px;border-radius:12px}}
 </style></head><body>
 <div id="progress"></div><div id="lb" role="dialog" aria-modal="true" aria-label="Diagram"><button class="close" type="button" aria-label="Close">×</button><img alt=""></div>
-<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 41 min read</div></header>
+<header class="bar"><div class="brand">Authentication v2 Implementation Plan</div><div class="meta">Implementation plan · 45 min read</div></header>
 <div class="layout">
 <main>
 <section class="hero"><div class="eyebrow">Implementation plan</div><h1>Authentication v2 Implementation Plan</h1>
-<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>41 min read</span></div></section>
+<div class="sub"><span>IoT Switch</span><span>Authentication v2</span><span>18 October 2026</span><span>45 min read</span></div></section>
 <article><p><strong>Status:</strong> Proposed · <strong>Date:</strong> 18 October 2026 · <strong>Implements:</strong> <a href="authentication-architecture.md">Authentication Architecture v2</a> · <strong>Codebase:</strong> <code>server/</code> (Node 22+, TypeScript run by type-stripping, Express 5, MCP SDK 1.30, PGlite) and <code>ios/</code> (SwiftUI, iOS 17.0, Swift 5)</p>
 <p>This plan turns the architecture into <strong>46 pull requests across six phases</strong> (six of them are the iOS series 3.6a–f). Every PR is small enough to review in one sitting and ships green. Every behaviour change sits behind a flag or is additive until its phase exit review. Section references such as &quot;arch §7.3&quot; point into the architecture document.</p>
 <hr>
@@ -231,7 +231,7 @@ footer{border-top:1px solid var(--line);padding:32px;text-align:center;font-size
 <tr>
 <td>G4</td>
 <td>Phase 4 starts</td>
-<td>Cloud provider for KMS, Redis and Postgres</td>
+<td>Cloud provider for KMS, Redis and Postgres. <strong>Deferred 19 Oct 2026:</strong> phase 4 built the KMS layer provider-neutral; only the adapter waits</td>
 </tr>
 <tr>
 <td>G5</td>
@@ -912,6 +912,20 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 </ul>
 <p><strong>Tests:</strong> logging a request object with an <code>Authorization</code> header emits no token. The scanner counts and redacts.</p>
 <p><strong>Phase 4 exit review:</strong> a load test of refresh and tool-call paths on Postgres + Redis. A failover drill (Redis down → refuse protected calls with 503, not fail open). AC-43 to AC-47.</p>
+<h3 id="phase-4-as-built">Phase 4 as built</h3>
+<ul>
+<li><strong>One branch, eight PRs&#39; worth.</strong> As in phases 2 and 3, the phase shipped as one change.</li>
+<li><strong>4.1 Postgres.</strong> <code>db/pg.ts</code> behind the same <code>Db</code> interface. <code>DATABASE_URL</code> selects it. <code>int8</code> is parsed as a number and <code>date</code> as UTC per pool, so nothing above <code>src/db</code> changed. Migrations moved from <code>BEGIN</code>/<code>COMMIT</code> over <code>exec</code> (which a pool can split across connections) into <code>transaction()</code> under a per-schema advisory lock, so several processes starting together migrate once. <code>REAL_CONTENTION</code> is not a separate mode: <code>npm run test:pg</code> runs the whole suite on Postgres 17 with a schema per test database (<code>DATABASE_ISOLATION=schema</code>), so every concurrency test contends through a real pool. The whole suite passed on Postgres 17 first time; the fifty-way tests are <code>test/contention.test.ts</code>. CI (<code>.github/workflows/server.yml</code>, the repository&#39;s first) runs PGlite and Postgres 17 + Redis 7 legs.</li>
+<li><strong>4.2 Redis.</strong> <code>stores/redis.ts</code>: buckets (one Lua script for <code>INCR</code> and expiry), DPoP <code>jti</code> replay (<code>SET NX EX</code>), and sealed refresh responses. The sealing key is HKDF-derived from the internal MAC key, so every process can open what another sealed and Redis sees only ciphertext. One <code>Infrastructure</code> object, from <code>REDIS_URL</code> or memory, is threaded through <code>createApp</code>. Sealing became async and is awaited inside the rotation transaction. <strong>Fail closed:</strong> no offline queue, a 500 ms command timeout, and any Redis error is a 503. With <code>TEST_REDIS_URL</code> the whole HTTP suite runs on the Redis stores. The plan&#39;s &quot;introspection cache in Redis&quot; is in memory per edge instead, emptied by the revocation bus (4.4), which bounds staleness the same way without a second shared cache.</li>
+<li><strong>4.3 KMS, provider-neutral (G4 deferred).</strong> <code>security/kms.ts</code> defines the five-call <code>Kms</code> interface. Peppers and the MAC key are envelope-encrypted data keys in <code>keys.kms.json</code>, decrypted once at start-up with the key name as associated data. Signing keys never leave the KMS: token B is now assembled by hand and signed through <code>SigningKey.sign</code>. <code>LocalKms</code> is a software implementation standing in for the emulator. <code>KMS_PROVIDER=aws|gcp|azure</code> refuses to start, naming G4. Rotation is <code>npm run keys -- rotate-pepper</code> (keep current and previous) and <code>rotate-signing</code> (previous stays in the JWKS). Rotation is a command to schedule, not an in-process timer.</li>
+<li><strong>4.4 Revocation bus.</strong> <code>revocation.ts</code> is a hub per process with three events: <code>grant.revoked</code>, <code>account.revoked</code>, <code>client.blocked</code>. <code>bridgeRevocations</code> joins hubs over a Redis channel, with an origin id so a process never re-delivers its own events. The exchange cache and the edge introspection cache subscribe. The budget store does not: a revoked grant&#39;s counters simply expire. Nothing emits <code>client.blocked</code> yet; there is no block action until an admin surface exists.</li>
+<li><strong>4.5 Passkeys.</strong> <code>@simplewebauthn/server</code> 14. Migration <strong>011</strong>, not 012: the iOS client needed no migration in phase 3. User verification is required, the RP ID is the authorization server&#39;s host, and challenges are single-use (<code>DELETE … RETURNING</code>). Sign-in challenges are bound to the browser-binding cookie, registration challenges to the account. Counter regression is refused, except 0→0 for synced passkeys. Registration lives on a new account area (<code>/account</code>) and needs a sign-in in the last 15 minutes. &quot;Sign in with a passkey&quot; appears on the authorization login page and the account sign-in page. Those pages, and only those, carry one nonce&#39;d script and <code>connect-src &#39;self&#39;</code>. Tests drive real ceremonies with a software authenticator (<code>test/webauthn-helpers.ts</code>). <strong>TOTP was not built</strong>: it is marked optional, and passkeys cover the phishing-resistant factor.</li>
+<li><strong>4.6 Connected apps.</strong> <code>/account/apps</code> lists each live grant with an honest name (host for CIMD, &quot;unverified&quot; plus destination for DCR, &quot;IoT Switch for iPhone&quot; for the app), scopes, created and last-used times. Disconnect, sign out everywhere, and password change (which signs out everywhere, then starts a fresh session here) are CSRF-protected. <code>last_used_at</code> is written at most once a minute per grant per process.</li>
+<li><strong>4.7 Profile M.</strong> Entry points <code>src/entry/{as,rs,gw,ds}.ts</code>. Adapters now take a <code>TokenVerifier</code> (local, or introspection over mTLS), an <code>Exchanger</code> and a <code>DeviceService</code> (local or remote), so profile S is the same code composed in one process. Internal listeners: the AS&#39;s <code>/introspect</code>, <code>/account</code> and <code>/token-exchange</code>, and the Device Service&#39;s four operations. Both require TLS 1.3 client certificates from the private CA with exactly one SPIFFE URI on the allowlist. Each edge may introspect only tokens for its own resource. Token B&#39;s <code>cnf</code> is <code>x5t#S256</code> of the certificate the edge presented to the AS, and the Device Service checks it against the certificate on its own connection. The Device Service verifies with the published JWKS (<code>JWKS_URL</code>). The gateway has no database, so in profile M the legacy password endpoints answer 410 and <code>/v1/auth/me</code> answers from introspection. <code>docker-compose.profile-m.yml</code> and <code>npm run certs</code> provide the local CA. <code>test/split.test.ts</code> runs the components over real mTLS in one process; <code>test/split-processes.test.ts</code> runs four real processes and needs Postgres and Redis.</li>
+<li><strong>4.8 Observability.</strong> <code>observability/log.ts</code> is the only logger. It allowlists fields, writes no object other than an <code>Error</code>, and scrubs <code>iotsw_xx_…</code>, JWTs and Authorization values, counting each redaction. <code>observability/metrics.ts</code> exposes the plan&#39;s counters (<code>exchange_cache_hit_ratio</code> is derived), plus <code>log_secrets_redacted</code>, <code>introspection_cache</code> and <code>alerts_raised</code>, on <code>METRICS_PORT</code> (loopback). Alerts go out as <code>level: alert</code> log lines in-process; the same rules are in <code>ops/alerts.yml</code> for Prometheus.</li>
+<li><strong>Acceptance report.</strong> It now treats a skipped test as unproven, not passing, and a criterion can require Postgres or Redis, so a PGlite-only run reports AC-30, AC-43, AC-44 and AC-47 as partial rather than proven.</li>
+<li><strong>Exit review, still to do.</strong> Run <code>npm run test:pg</code> locally (CI runs it on every PR), then the load test (<code>npm run load</code>) and the failover drill on Postgres + Redis. Docker was unavailable on the development machine for the last part of the phase.</li>
+</ul>
 <hr>
 <h2 id="9-testing-strategy">9. Testing strategy</h2>
 <h3 id="91-new-and-changed-test-files">9.1 New and changed test files</h3>
@@ -1184,10 +1198,10 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 </tr>
 <tr>
 <td><code>PASSKEYS</code></td>
-<td><code>off</code></td>
+<td>not built</td>
 <td>4.5</td>
-<td><code>on</code></td>
-<td>Phase 5</td>
+<td>n/a</td>
+<td>n/a: always offered; an account without a passkey sees only the extra button</td>
 </tr>
 <tr>
 <td><code>HOST_EGRESS_PINNING</code></td>
@@ -1325,14 +1339,15 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 </ul>
 <h3 id="phase-4">Phase 4</h3>
 <ul>
-<li><input disabled="" type="checkbox"> 4.1 Postgres driver and dual CI</li>
-<li><input disabled="" type="checkbox"> 4.2 Redis stores</li>
-<li><input disabled="" type="checkbox"> 4.3 KMS key provider</li>
-<li><input disabled="" type="checkbox"> 4.4 Revocation bus</li>
-<li><input disabled="" type="checkbox"> 4.5 Passkeys</li>
-<li><input disabled="" type="checkbox"> 4.6 Connected apps page</li>
-<li><input disabled="" type="checkbox"> 4.7 Profile M split</li>
-<li><input disabled="" type="checkbox"> 4.8 Observability</li>
+<li><input checked="" disabled="" type="checkbox"> 4.1 Postgres driver and dual CI</li>
+<li><input checked="" disabled="" type="checkbox"> 4.2 Redis stores</li>
+<li><input checked="" disabled="" type="checkbox"> 4.3 KMS key provider (provider-neutral; the cloud adapter waits on G4)</li>
+<li><input checked="" disabled="" type="checkbox"> 4.4 Revocation bus</li>
+<li><input checked="" disabled="" type="checkbox"> 4.5 Passkeys (TOTP, optional, not built)</li>
+<li><input checked="" disabled="" type="checkbox"> 4.6 Connected apps page</li>
+<li><input checked="" disabled="" type="checkbox"> 4.7 Profile M split</li>
+<li><input checked="" disabled="" type="checkbox"> 4.8 Observability</li>
+<li><input disabled="" type="checkbox"> Exit review: load test and failover drill on Postgres + Redis</li>
 </ul>
 <h3 id="phase-5-optional">Phase 5 (optional)</h3>
 <ul>
@@ -1395,6 +1410,7 @@ export type VerifiedCaller = Extract&lt;Caller, { kind: &#39;verified&#39; }&gt;
 <a class="l3" href="#pr-46-connected-apps-page-3-d">PR 4.6: Connected apps page · 3 d</a>
 <a class="l3" href="#pr-47-profile-m-split-6-d">PR 4.7: Profile M split · 6 d</a>
 <a class="l3" href="#pr-48-observability-and-leak-response-3-d">PR 4.8: Observability and leak response · 3 d</a>
+<a class="l3" href="#phase-4-as-built">Phase 4 as built</a>
 <a class="l2" href="#9-testing-strategy">9. Testing strategy</a>
 <a class="l3" href="#91-new-and-changed-test-files">9.1 New and changed test files</a>
 <a class="l3" href="#92-probes-kept-as-regression-tests">9.2 Probes kept as regression tests</a>

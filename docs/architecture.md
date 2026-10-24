@@ -106,7 +106,7 @@ server/
     oauth/              OAuth 2.1 authorization server
     mcp/                MCP adapter: gate, tools, resources
       ui/assets/        the four views, plus the shared bridge and stylesheet
-  test/                 238 tests
+  test/                 284 tests
   acceptance/           criteria mapped to the tests that establish them
   tools/                dev harnesses: mock-host, host-check, client-check
 
@@ -436,9 +436,9 @@ PostgreSQL SQL precisely so that closing that gap is one file.
 
 | | |
 | --- | --- |
-| No `pg` driver | Concurrency proven logically, not under contention |
 | Inline row budget | Published guidance, not measured |
-| Rate limiter | Per-process and in-memory |
+| Shared state | In memory unless `REDIS_URL` is set; profile M requires it |
+| KMS | Provider-neutral, with a software stand-in; the cloud adapter waits on G4 |
 | Case folding | `toLowerCase`, not full Unicode folding |
 | DCR eviction | Runs on registration, not on a timer |
 | iPad | Renders, but as the iPhone layout scaled up |
@@ -460,6 +460,11 @@ doors — a Device Service reachable only with a one-minute internal token
 obtained by token exchange, a tool policy table with write budgets, and an
 audit trail naming the client, grant and adapter behind every change. Phase 3
 moved the iOS app onto the authorization server: browser sign-in, PAR, and
-DPoP-bound tokens from a Secure Enclave key.
+DPoP-bound tokens from a Secure Enclave key. Phase 4 added the production
+infrastructure: a PostgreSQL driver with CI on both databases, Redis-backed
+shared state that fails closed, KMS-held keys, a cross-process revocation bus,
+passkeys, a connected-apps page, a four-process split (profile M) over mutual
+TLS with certificate-bound internal tokens, and a redacting logger with
+security metrics and alerts.
 Sections 2 and 6 above describe the system before those phases; the v2
 document describes it after.
