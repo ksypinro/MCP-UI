@@ -273,3 +273,38 @@ test('a notification whose params are not an object is dropped', () => {
   deliver({ jsonrpc: '2.0', method: 'ui/notifications/tool-result', params: 'not an object' });
   assert.equal(called, false);
 });
+
+test('a partial host-context update keeps the display mode it does not mention', () => {
+  // Found on Claude web: fullscreen was granted, then a context update
+  // carrying only new dimensions replaced the whole context, and the list
+  // went back to four rows. Updates carry only changed fields (MCP Apps
+  // 2026-01-26), so they are merged.
+  const { app, deliver } = loadBridge();
+  deliver({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { displayMode: 'fullscreen' } });
+  deliver({ jsonrpc: '2.0', method: 'ui/notifications/host-context-changed', params: { containerDimensions: { width: 800 } } });
+  assert.equal(app.displayMode(), 'fullscreen');
+  assert.equal(app.hostContext().containerDimensions.width, 800);
+});
+
+test('the mode a host grants is applied at once, with no context update', async () => {
+  const loaded = loadBridge();
+  await handshake(loaded, 'https://sandbox.host.example');
+
+  const granted = loaded.app.requestDisplayMode('fullscreen');
+  const request = [...loaded.sent].reverse().find((m) => m.method === 'ui/request-display-mode');
+  assert.equal(request.params.mode, 'fullscreen');
+  loaded.deliver({ jsonrpc: '2.0', id: request.id, result: { mode: 'fullscreen' } });
+
+  assert.equal(await granted, 'fullscreen');
+  assert.equal(loaded.app.displayMode(), 'fullscreen', 'without waiting for host-context-changed');
+});
+
+test('a host that grants a different mode is believed', async () => {
+  const loaded = loadBridge();
+  await handshake(loaded, 'https://sandbox.host.example');
+  const granted = loaded.app.requestDisplayMode('fullscreen');
+  const request = [...loaded.sent].reverse().find((m) => m.method === 'ui/request-display-mode');
+  loaded.deliver({ jsonrpc: '2.0', id: request.id, result: { mode: 'inline' } });
+  assert.equal(await granted, 'inline');
+  assert.equal(loaded.app.displayMode(), 'inline');
+});

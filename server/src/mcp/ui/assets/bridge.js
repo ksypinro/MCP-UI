@@ -131,8 +131,15 @@
 
   /* ------------------------------------------------------- host context */
 
-  function applyHostContext(context) {
-    hostContext = context || {};
+  /**
+   * `replace` is for the context ui/initialize returns, which is complete.
+   * host-context-changed carries only the fields that changed (MCP Apps
+   * 2026-01-26), so it is merged. Replacing it lost the display mode whenever
+   * a host sent, say, only new container dimensions: Claude web granted
+   * fullscreen and the list stayed at four rows.
+   */
+  function applyHostContext(context, replace) {
+    hostContext = replace ? (context || {}) : Object.assign({}, hostContext, context || {});
     var insets = hostContext.safeAreaInsets || {};
     var root = document.documentElement;
     // Safe areas come from the host, not from CSS env(): inside a chat
@@ -174,8 +181,17 @@
       });
     },
 
+    /**
+     * Resolves with the mode the host actually set, which may differ from the
+     * one asked for. The answer is applied at once rather than waiting for a
+     * host-context-changed that a host may send late, partially, or not at all.
+     */
     requestDisplayMode: function (mode) {
-      return request('ui/request-display-mode', { mode: mode });
+      return request('ui/request-display-mode', { mode: mode }).then(function (result) {
+        var granted = (result && result.mode) || mode;
+        applyHostContext({ displayMode: granted });
+        return granted;
+      });
     },
 
     openLink: function (url) {
@@ -201,7 +217,7 @@
       }, 15000).then(function (result) {
         notify('ui/notifications/initialized', {});
         hostCapabilities = (result && result.hostCapabilities) || {};
-        applyHostContext(result && result.hostContext);
+        applyHostContext(result && result.hostContext, true);
         return result || {};
       });
     }

@@ -202,8 +202,14 @@
 
   $('refresh').addEventListener('click', function () { load(); });
   $('expand').addEventListener('click', function () {
-    app.requestDisplayMode('fullscreen').then(function () {
+    app.requestDisplayMode('fullscreen').then(function (granted) {
       render();
+      // Granted something else (still inline, or picture-in-picture): the
+      // host has decided, so stop offering a button that cannot help.
+      if (granted !== 'fullscreen') {
+        $('expand').hidden = true;
+        say('This host kept the compact view. Ask for the full list in the conversation.', true);
+      }
     }).catch(function () {
       // Refused: say so rather than leaving a button that appears broken.
       $('expand').hidden = true;
